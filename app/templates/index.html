@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Centra Audit — Joy/Privateaser</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>🎯 Centra Audit</h1>
+    <p class="subtitle">Évaluation de centralisation des réservations groupe — Joy / Privateaser</p>
+  </div>
+
+  {% if missing %}
+  <div class="card" style="border-color: #fde68a; background: #fffbeb;">
+    <div class="card-title" style="color: #d97706;">⚠️ Champs obligatoires manquants</div>
+    <p style="font-size: 13px; color: #92400e;">Les champs suivants sont requis pour lancer l'audit : <strong>{{ missing | join(', ') }}</strong>.<br>Complète-les ci-dessous avant de démarrer.</p>
+  </div>
+  {% endif %}
+
+  <form action="/audit/start" method="POST" id="audit-form">
+    <!-- Infos venue -->
+    <div class="card">
+      <div class="card-title">📋 Informations venue</div>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>Nom de la venue *</label>
+          <input type="text" name="venue_name" value="{{ params.get('venue_name', '') }}" placeholder="Ex : Le Comptoir du Marais" class="{{ 'missing' if 'venue_name' in missing else '' }}" required>
+          {% if 'venue_name' in missing %}<span class="missing-badge">Champ requis</span>{% endif %}
+        </div>
+        <div class="form-group">
+          <label>Segment *</label>
+          <select name="segment" class="{{ 'missing' if 'segment' in missing else '' }}" required>
+            <option value="" {% if not params.get('segment') %}selected{% endif %}>— Choisir —</option>
+            <option value="1" {% if params.get('segment') == '1' %}selected{% endif %}>Segment 1</option>
+            <option value="2" {% if params.get('segment') == '2' %}selected{% endif %}>Segment 2</option>
+          </select>
+        </div>
+        <div class="form-group full">
+          <label>Adresse *</label>
+          <input type="text" name="address" value="{{ params.get('address', '') }}" placeholder="Ex : 7 rue Blondel, 75003 Paris" class="{{ 'missing' if 'address' in missing else '' }}" required>
+        </div>
+      </div>
+    </div>
+
+    <!-- Canaux -->
+    <div class="card">
+      <div class="card-title">🌐 Canaux à auditer</div>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>Site Web (URL)</label>
+          <input type="url" name="website" value="{{ params.get('website', '') }}" placeholder="https://...">
+        </div>
+        <div class="form-group full">
+          <label>Instagram (URL profil)</label>
+          <input type="url" name="instagram" value="{{ params.get('instagram', '') }}" placeholder="https://instagram.com/...">
+        </div>
+        <div class="form-group full">
+          <label>Linktree (URL — si présent dans la bio Instagram)</label>
+          <input type="url" name="linktree" value="{{ params.get('linktree', '') }}" placeholder="https://linktr.ee/...">
+        </div>
+        <div class="form-group full">
+          <label>Google My Business (URL fiche)</label>
+          <input type="url" name="gmb" value="{{ params.get('gmb', '') }}" placeholder="https://maps.google.com/...">
+        </div>
+        <div class="form-group">
+          <label>Section Réservations GMB — doublon widget Joy ?</label>
+          <select name="gmb_reservation_doublon">
+            <option value="inconnu" {% if params.get('gmb_reservation_doublon','inconnu') == 'inconnu' %}selected{% endif %}>Inconnu / à vérifier</option>
+            <option value="oui" {% if params.get('gmb_reservation_doublon') == 'oui' %}selected{% endif %}>Oui — doublon présent (Vitrine + Widget Joy)</option>
+            <option value="non" {% if params.get('gmb_reservation_doublon') == 'non' %}selected{% endif %}>Non — seulement la Vitrine</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Canaux supplémentaires -->
+    <div class="card">
+      <div class="card-title">📦 Individual Booking SaaS <span style="font-size:11px;font-weight:400;color:var(--text-muted);">(Segment 2 uniquement)</span></div>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>Plateformes utilisées (sépare par virgule)</label>
+          <input type="text" name="saas_platforms" value="{{ params.get('saas_platforms', '') }}" placeholder="Ex : Zenchef, TheFork, OpenTable">
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🎙️ Autres canaux</div>
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>URLs des profils (Tripadvisor, Fanzo, etc.) — sépare par virgule</label>
+          <input type="text" name="autres_canaux" value="{{ params.get('autres_canaux', '') }}" placeholder="https://tripadvisor.fr/..., https://fanzo.fr/...">
+        </div>
+      </div>
+    </div>
+
+    <!-- Params Joy -->
+    <div class="card">
+      <div class="card-title">⚙️ Paramètres Joy / Privateaser</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>URL Widget Joy</label>
+          <input type="text" name="joy_widget" value="{{ params.get('joy_widget', '') }}" placeholder="prvt.re/xxx ou URL longue">
+        </div>
+        <div class="form-group">
+          <label>URL Vitrine Événementielle</label>
+          <input type="url" name="vitrine" value="{{ params.get('vitrine', '') }}" placeholder="https://www.privateaser.com/lieu/...">
+        </div>
+        <div class="form-group">
+          <label>Numéro MVI</label>
+          <input type="text" name="mvi" value="{{ params.get('mvi', '') }}" placeholder="09 74 XX XX XX">
+        </div>
+        <div class="form-group">
+          <label>Reserve with Google activé ?</label>
+          <select name="rwg_active">
+            <option value="non" {% if params.get('rwg_active', 'non') == 'non' %}selected{% endif %}>Non</option>
+            <option value="oui" {% if params.get('rwg_active') == 'oui' %}selected{% endif %}>Oui</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; justify-content: flex-end;">
+      <button type="submit" class="btn btn-primary" id="submit-btn">
+        <span>🚀 Lancer l'audit</span>
+      </button>
+    </div>
+  </form>
+</div>
+
+<script>
+document.getElementById('audit-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span>⏳ Démarrage...</span>';
+
+  const formData = new FormData(this);
+  const resp = await fetch('/audit/start', { method: 'POST', body: formData });
+  const data = await resp.json();
+  if (data.audit_id) {
+    window.location.href = `/result/${data.audit_id}`;
+  }
+});
+</script>
+</body>
+</html>

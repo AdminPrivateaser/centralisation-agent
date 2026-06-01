@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Audit — {{ params.venue_name }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="container">
+
+  {% set scores = audit.scores %}
+  {% set channels = audit.channels %}
+  {% set actions = audit.priority_actions %}
+  {% set color = scores.color %}
+  {# qo = quanti_override dict passed from Python (source of truth) #}
+  {% set qo = quanti_override %}
+
+  {# Helper macro: render criteria table with detail column #}
+  {% macro criteria_table(criteria_list, forced_mvi=false) %}
+  <table>
+    <thead><tr><th>Critère</th><th>Résultat</th><th>Points</th><th style="color:var(--text-muted);font-size:11px;">Détail</th></tr></thead>
+    <tbody>
+    {% for c in criteria_list %}
+      {% set is_mvi = forced_mvi and ('mvi' in c.label|lower or 'numéro' in c.label|lower) %}
+      {% set status = 'ok' if is_mvi else c.status %}
+      <tr>
+        <td>{{ c.label }}</td>
+        <td>{{ {'ok':'✅ OK','ko':'❌ KO','partial':'⚠️ Partiel'}.get(status, status) }}</td>
+        <td>
+          {% if status == 'ok' %}<span class="gain">+{{ c.max_points }} / {{ c.max_points }} pts</span>
+          {% elif status == 'partial' %}<span style="color:var(--orange);font-weight:600;">+{{ c.points }} / {{ c.max_points }} pts</span>
+          {% else %}<span style="color:var(--text-muted);">+0 / {{ c.max_points }} pts</span>{% endif %}
+        </td>
+        <td style="color:var(--text-muted);font-size:12px;font-style:italic;">{{ c.detail or '' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endmacro %}
+
+  {# Helper macro: render channel quanti badge using override #}
+  {% macro quanti_badge(ch_key, ch_data) %}
+    {% set forced = qo.get(ch_key) %}
+    {% set ok = forced if forced is not none else ch_data.get('quanti_ok', False) %}
+    <span class="channel-badge {{ 'badge-green' if ok else 'badge-red' }}">
+      {{ '✅ Setup min OK' if ok else '❌ Setup min KO' }}
+    </span>
+  {% endmacro %}
+
+  <!-- Topbar -->
+  <div class="topbar">
+    <div class="venue-info">
+      <h1>{{ scores.color_emoji }} {{ params.venue_name }}</h1>
+      <div class="meta">Segment {{ params.segment }} · {{ params.address }} · Audit du {{ now }}</div>
+    </div>
+    <div class="actions-row">
+      {% if notion_url %}
+      <a href="{{ notion_url }}" target="_blank" class="btn btn-notion">📝 Voir dans Notion</a>
+      {% endif %}
+      <a href="/" class="btn btn-notion">← Nouvel audit</a>
+    </div>
+  </div>
+
+  <!-- Scores -->
+  <div class="card">
+    <div class="score-grid">
+      <div class="score-item">
+        <div class="value {{ 'score-' + color }} score-badge" style="justify-content:center;">
+          {{ scores.global_score }} / 100
+        </div>
+        <div class="label" style="margin-top:8px;">Note globale</div>
+        <div class="sub">Quanti ×40% + Quali ×60%</div>
+      </div>
+      <div class="score-item">
+        <div class="value" style="color: var(--blue);">{{ scores.quanti_score }} / 100</div>
+        <div class="label">Quanti</div>
+        <div class="sub">{{ scores.quanti_detail }}</div>
+      </div>
+      <div class="score-item">
+        <div class="value" style="color: var(--orange);">{{ scores.quali_score }} / 100</div>
+        <div class="label">Quali</div>
+        <div class="sub">{{ scores.quali_detail }}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Priority actions -->
+  {% if actions %}
+  <div class="card">
+    <div class="card-title">🚨 Points de fuite et actions prioritaires</div>
+    <table>
+      <thead>
+        <tr><th>Priorité</th><th>Canal</th><th>Point de fuite</th><th>Action</th><th>Gain</th></tr>
+      </thead>
+      <tbody>
+        {% for a in actions[:5] %}
+        <tr class="priority-{{ a.priority }}">
+          <td>{{ '🔴' if a.priority <= 2 else '🟠' }} {{ a.priority }}</td>
+          <td><strong>{{ a.channel }}</strong></td>
+          <td>{{ a.leak_point }}</td>
+          <td>{{ a.action }}</td>
+          <td class="gain">+{{ a.gain_pts }} pts</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {# Helper macro: channel link CTA #}
+  {% macro channel_link(url, label="Ouvrir") %}
+    {% if url %}<a href="{{ url }}" target="_blank" class="btn btn-notion" style="font-size:11px;padding:4px 10px;">↗ {{ label }}</a>{% endif %}
+  {% endmacro %}
+
+  <!-- Channel: Website -->
+  {% set ws = channels.get('website', {}) %}
+  {% if ws %}
+  <div class="card channel-section">
+    <div class="channel-header">
+      <span style="font-size:20px;">🌐</span><h2>Site Web</h2>
+      {{ channel_link(params.website, "Site web") }}
+    </div>
+    <div class="channel-meta">
+      {{ quanti_badge('website', ws) }}
+      {% set q_color = 'badge-green' if ws.quali_score >= ws.quali_max * 0.8 else ('badge-orange' if ws.quali_score >= ws.quali_max * 0.5 else 'badge-red') %}
+      <span class="channel-badge {{ q_color }}">{{ ws.quali_score }} / {{ ws.quali_max }} pts quali</span>
+    </div>
+    {% if ws.criteria %}{{ criteria_table(ws.criteria) }}{% endif %}
+    {% if ws.priority_action %}<div class="action-box"><strong>Action :</strong> {{ ws.priority_action }}</div>{% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Channel: GMB -->
+  {% set gmb = channels.get('gmb', {}) %}
+  {% if gmb %}
+  <div class="card channel-section">
+    <div class="channel-header">
+      <span style="font-size:20px;">📍</span><h2>Google My Business</h2>
+      {{ channel_link(params.gmb, "Fiche GMB") }}
+    </div>
+    <div class="channel-meta">
+      {{ quanti_badge('gmb', gmb) }}
+      {% set q_color = 'badge-green' if gmb.quali_score >= gmb.quali_max * 0.8 else ('badge-orange' if gmb.quali_score >= gmb.quali_max * 0.5 else 'badge-red') %}
+      <span class="channel-badge {{ q_color }}">{{ gmb.quali_score }} / {{ gmb.quali_max }} pts quali</span>
+    </div>
+    {% if gmb.criteria %}{{ criteria_table(gmb.criteria) }}{% endif %}
+    {% if gmb.priority_action %}<div class="action-box"><strong>Action :</strong> {{ gmb.priority_action }}</div>{% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Channel: RwG -->
+  {% set rwg = channels.get('rwg', {}) %}
+  {% if rwg %}
+  <div class="card channel-section">
+    <div class="channel-header">
+      <span style="font-size:20px;">🔵</span><h2>Reserve with Google</h2>
+      {% if not rwg.get('eligible', True) %}<span class="channel-badge badge-gray">Non éligible</span>{% endif %}
+      {{ channel_link(params.gmb, "Voir sur Maps") }}
+    </div>
+    {% if rwg.get('eligible', True) %}
+    <div class="channel-meta">
+      {{ quanti_badge('rwg', rwg) }}
+      {% set q_color = 'badge-green' if rwg.quali_score >= rwg.quali_max * 0.8 else ('badge-orange' if rwg.quali_score >= rwg.quali_max * 0.5 else 'badge-red') %}
+      <span class="channel-badge {{ q_color }}">{{ rwg.quali_score }} / {{ rwg.quali_max }} pts quali</span>
+    </div>
+    {% if rwg.criteria %}{{ criteria_table(rwg.criteria) }}{% endif %}
+    {% if rwg.priority_action %}<div class="action-box"><strong>Action :</strong> {{ rwg.priority_action }}</div>{% endif %}
+    {% else %}
+    <p style="color:var(--text-muted);font-size:13px;">Ce canal n'est pas applicable (pas de bar/restaurant éligible).</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Channel: Instagram -->
+  {% set ig = channels.get('instagram', {}) %}
+  {% if ig %}
+  <div class="card channel-section">
+    <div class="channel-header">
+      <span style="font-size:20px;">📸</span><h2>Instagram</h2>
+      {{ channel_link(params.instagram, "Profil Instagram") }}
+    </div>
+    <div class="channel-meta">
+      {{ quanti_badge('instagram', ig) }}
+      {% set q_color = 'badge-green' if ig.quali_score >= ig.quali_max * 0.8 else ('badge-orange' if ig.quali_score >= ig.quali_max * 0.5 else 'badge-red') %}
+      <span class="channel-badge {{ q_color }}">{{ ig.quali_score }} / {{ ig.quali_max }} pts quali</span>
+    </div>
+    {% if ig.criteria %}{{ criteria_table(ig.criteria, forced_mvi=qo.get('instagram_has_mvi', false)) }}{% endif %}
+    {% if ig.priority_action %}<div class="action-box"><strong>Action :</strong> {{ ig.priority_action }}</div>{% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Channel: Individual Booking SaaS -->
+  {% set saas = channels.get('saas', {}) %}
+  {% if saas and saas.get('available') %}
+  <div class="card channel-section">
+    <div class="channel-header">
+      <span style="font-size:20px;">📦</span>
+      <h2>Individual Booking SaaS</h2>
+    </div>
+    {% if not saas.get('applicable', true) %}
+    <p style="color:var(--text-muted);font-size:13px;padding:4px 0;">⚪ <em>N/A — {{ saas.get('reason_na', 'Non applicable pour ce segment') }}</em></p>
+    {% else %}
+    <div class="channel-meta">
+      {{ quanti_badge('saas', saas) }}
+      {% set q_color = 'badge-green' if saas.quali_score >= saas.quali_max * 0.8 else ('badge-orange' if saas.quali_score >= saas.quali_max * 0.5 else 'badge-red') %}
+      <span class="channel-badge {{ q_color }}">{{ saas.quali_score }} / {{ saas.quali_max }} pts quali</span>
+    </div>
+    {% if saas.criteria %}{{ criteria_table(saas.criteria) }}{% endif %}
+    {% if saas.priority_action %}<div class="action-box"><strong>Action :</strong> {{ saas.priority_action }}</div>{% endif %}
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Channel: Autres canaux -->
+  {% set autres = channels.get('autres_canaux', {}) %}
+  {% if autres and autres.get('available') %}
+  <div class="card channel-section">
+    <div class="channel-header">
+      <span style="font-size:20px;">🎙️</span>
+      <h2>Autres canaux</h2>
+    </div>
+    <div class="channel-meta">
+      <span class="channel-badge {{ 'badge-green' if autres.quanti_ok else 'badge-gray' }}">
+        {{ '✅ ' + (autres.quanti_detail or 'Au moins 1 canal centralisé') if autres.quanti_ok else '⚪ ' + (autres.quanti_detail or 'Aucun canal centralisé') }}
+      </span>
+      <span class="channel-badge badge-gray" style="font-size:11px;">⭐ Better — non noté</span>
+    </div>
+    <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">⭐ Section <strong>Better / Bonus</strong> — non notée, indicative uniquement</p>
+    {% if autres.criteria %}
+    <table>
+      <thead><tr><th>Canal</th><th>Résultat</th><th>Bonus</th><th style="color:var(--text-muted);font-size:11px;">Détail</th></tr></thead>
+      <tbody>
+        {% for c in autres.criteria %}
+        <tr>
+          <td>
+            {{ c.label }}
+            {% if c.url %}<a href="{{ c.url }}" target="_blank" style="margin-left:6px;font-size:11px;color:var(--blue);">↗</a>{% endif %}
+          </td>
+          <td>{{ {'ok':'✅ OK','ko':'❌ À faire','partial':'⚠️ Partiel'}.get(c.status, c.status) }}</td>
+          <td><span style="font-size:11px;color:var(--text-muted);font-style:italic;">⭐ Better</span></td>
+          <td style="color:var(--text-muted);font-size:12px;font-style:italic;">{{ c.detail or '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if autres.priority_action %}<div class="action-box"><strong>Action :</strong> {{ autres.priority_action }}</div>{% endif %}
+  </div>
+  {% endif %}
+
+</div>
+</body>
+</html>

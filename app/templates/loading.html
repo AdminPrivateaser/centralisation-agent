@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Audit en cours...</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="container">
+  <div class="loading-wrap">
+    <div class="spinner"></div>
+    <div>
+      <h2 style="font-size: 20px; margin-bottom: 6px;">Audit en cours...</h2>
+      <p style="color: var(--text-muted); font-size: 13px;">Scraping des canaux + analyse Claude — environ 2 minutes</p>
+    </div>
+    <div class="progress-log" id="log">
+      <div class="line">En attente...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const auditId = "{{ audit_id }}";
+const log = document.getElementById('log');
+
+const evtSource = new EventSource(`/audit/${auditId}/progress`);
+evtSource.onmessage = function(e) {
+  const data = JSON.parse(e.data);
+  if (data.msg) {
+    const lines = log.querySelectorAll('.line');
+    lines.forEach(l => l.classList.remove('last'));
+    const line = document.createElement('div');
+    line.className = 'line last';
+    line.textContent = data.msg;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+  if (data.done) {
+    evtSource.close();
+    if (data.redirect) {
+      setTimeout(() => window.location.href = data.redirect, 800);
+    }
+  }
+};
+evtSource.onerror = function() {
+  evtSource.close();
+  setTimeout(() => location.reload(), 3000);
+};
+</script>
+</body>
+</html>
