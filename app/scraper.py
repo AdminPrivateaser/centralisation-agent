@@ -2,9 +2,28 @@
 import asyncio
 import os
 import re
+import urllib.parse
 from typing import Optional
 import httpx
 from playwright.async_api import async_playwright, Page
+
+# ── Exclusion list for Autres canaux auto-detection ─────────────────────────
+# Sites we never audit as "Autres canaux" (social media, SaaS already covered, etc.)
+EXCLUSION_DOMAINS = {
+    # Social media (audited separately)
+    "instagram.com", "facebook.com", "twitter.com", "x.com",
+    "tiktok.com", "youtube.com", "linkedin.com", "snapchat.com",
+    # Search engines & maps
+    "google.com", "google.fr", "bing.com", "apple.com", "waze.com",
+    # Booking SaaS (covered in SaaS section)
+    "thefork.com", "lafourchette.com", "zenchef.com", "opentable.com",
+    "resmio.com", "dish.co", "covermanager.com", "uniiti.com",
+    "sevenrooms.com", "restoo.fr", "guestonline.io",
+    # Delivery (out of scope)
+    "ubereats.com", "deliveroo.fr", "justeat.fr",
+    # Joy/Privateaser already audited
+    "privateaser.com", "joy.io", "prvt.re", "widget.privateaser.com",
+}
 
 # ── SaaS Individual Booking detection patterns ──────────────────────────────
 SAAS_PATTERNS = {
@@ -397,6 +416,141 @@ async def scrape_linktree(url: str) -> dict:
             await browser.close()
 
 
+async def _google_search(query: str, num_results: int = 10) -> list[dict]:
+    """Scrape Google Search results and return list of {url, title, snippet}."""
+    encoded = urllib.parse.quote_plus(query)
+    url = f"https://www.google.fr/search?q={encoded}&num={num_results}&hl=fr&gl=fr"
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale="fr-FR",
+            viewport={"width": 1280, "height": 900},
+        )
+        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        page = await context.new_page()
+        results = []
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            await asyncio.sleep(2)
+            # Accept cookies if prompted
+            try:
+                btn = page.locator("text=Tout accepter").first
+                if await btn.is_visible(timeout=2000):
+                    await btn.click()
+                    await asyncio.sleep(1)
+            except Exception:
+                pass
+            html = await page.content()
+            text = await page.evaluate("document.body.innerText")
+            # Check for CAPTCHA
+            if "captcha" in html.lower() or "unusual traffic" in text.lower():
+                return []
+            # Extract result blocks: title + URL + snippet
+            # Google result structure: <div class="g">...<h3>title</h3>...<cite>url</cite>...<span>snippet</span>
+            blocks = re.findall(
+                r'<h3[^>]*>(.*?)</h3>.*?<cite[^>]*>(.*?)</cite>.*?<div[^>]*class="[^"]*VwiC3b[^"]*"[^>]*>(.*?)</div>',
+                html, re.DOTALL
+            )
+            for title_raw, url_raw, snippet_raw in blocks[:num_results]:
+                title = re.sub('<.*?>', '', title_raw).strip()
+                result_url = re.sub('<.*?>', '', url_raw).strip()
+                snippet = re.sub('<.*?>', '', snippet_raw).strip()
+                if result_url and result_url.startswith('http'):
+                    results.append({"url": result_url, "title": title, "snippet": snippet})
+            # Fallback: extract URLs from href attributes
+            if not results:
+                hrefs = re.findall(r'href="(https://[^"]+)"', html)
+                for href in hrefs:
+                    domain = re.search(r'https?://(?:www\.)?([^/?]+)', href)
+                    if domain and not any(ex in domain.group(1) for ex in ["google", "gstatic", "googleapis"]):
+                        results.append({"url": href, "title": "", "snippet": ""})
+        except Exception:
+            pass
+        finally:
+            await browser.close()
+        return results
+
+
+async def get_instagram_bio_via_google(instagram_url: str, venue_name: str) -> dict:
+    """Use Google to extract Instagram bio/phone since Instagram blocks server scrapers."""
+    # Extract handle from URL
+    handle_match = re.search(r'instagram\.com/([^/?]+)', instagram_url or "")
+    handle = handle_match.group(1) if handle_match else venue_name
+
+    results = await _google_search(f'site:instagram.com "{handle}"', num_results=3)
+    if not results:
+        # Fallback: search for venue name on Instagram
+        results = await _google_search(f'instagram {venue_name}', num_results=5)
+
+    # Extract phone numbers from snippets
+    phone_numbers = []
+    bio_text = ""
+    for r in results:
+        combined = r.get("snippet", "") + " " + r.get("title", "")
+        phones = re.findall(r'(?:0|\+33)\s?[1-9](?:[\s.\-]?\d{2}){4}', combined)
+        phone_numbers.extend(phones)
+        bio_text += " " + combined
+
+    phone_normalized = [re.sub(r'[\s.\-]', '', p) for p in phone_numbers]
+    return {
+        "source": "google_snippet",
+        "bio_text": bio_text.strip()[:500],
+        "phone_numbers": list(set(phone_numbers)),
+        "phone_normalized": list(set(phone_normalized)),
+    }
+
+
+async def search_venue_online(venue_name: str, address: str, venue_website: str = "") -> list[dict]:
+    """
+    Google search for venue name + city, return top directory/annuaire pages.
+    Excludes social media, SaaS platforms, and the venue's own website.
+    """
+    # Extract city from address
+    city_match = re.search(r'(\d{5})\s+(.+)', address)
+    city = city_match.group(2) if city_match else address.split(",")[-1].strip()
+
+    results = await _google_search(f'"{venue_name}" {city}', num_results=15)
+
+    # Filter results
+    venue_domain = ""
+    if venue_website:
+        dom = re.search(r'https?://(?:www\.)?([^/?]+)', venue_website)
+        if dom:
+            venue_domain = dom.group(1)
+
+    filtered = []
+    seen_domains = set()
+    for r in results:
+        url = r["url"]
+        dom_match = re.search(r'https?://(?:www\.)?([^/?]+)', url)
+        if not dom_match:
+            continue
+        domain = dom_match.group(1)
+
+        # Skip excluded domains
+        if any(ex in domain for ex in EXCLUSION_DOMAINS):
+            continue
+        # Skip venue's own website
+        if venue_domain and venue_domain in domain:
+            continue
+        # Skip duplicate domains
+        if domain in seen_domains:
+            continue
+
+        seen_domains.add(domain)
+        r["domain"] = domain
+        # Try to identify canal name from domain
+        r["canal_name"] = domain.split(".")[0].capitalize()
+        for target in AUTRES_CANAUX_TARGETS:
+            if target["domain"].split(".")[0] in domain:
+                r["canal_name"] = target["name"]
+                break
+        filtered.append(r)
+
+    return filtered[:8]  # Max 8 canaux
+
+
 def detect_saas_from_scraped(website_data: dict, gmb_data: dict) -> list[str]:
     """Detect which SaaS platforms are used by the venue from scraped website/GMB."""
     detected = []
@@ -634,32 +788,65 @@ async def scrape_all_channels(params: dict) -> dict:
     else:
         results["saas"] = {"available": True, "applicable": False, "reason": "Segment 1 — non applicable"}
 
-    # ── Autres canaux (Segment 1 only) ───────────────────────────────────────
-    # IMPORTANT: Only use manually provided URLs — NO auto-detection (too unreliable in production)
+    # ── Instagram MVI via Google (if direct scraping was blocked) ────────────
+    ig_data = results.get("instagram", {})
+    if ig_data.get("available") and not ig_data.get("phone_numbers_normalized"):
+        # Instagram scraping returned no phones → try Google snippet
+        try:
+            google_ig = await get_instagram_bio_via_google(
+                params.get("instagram", ""), params.get("venue_name", "")
+            )
+            if google_ig.get("phone_normalized"):
+                ig_data["phone_numbers_normalized"] = google_ig["phone_normalized"]
+                ig_data["phone_numbers_found"] = google_ig["phone_numbers"]
+                ig_data["bio_source"] = "google_snippet"
+                results["instagram"] = ig_data
+        except Exception:
+            pass
+
+    # ── Autres canaux — Google Search auto-détection + URLs manuelles ─────────
     mvi = params.get("mvi", "")
     vitrine = params.get("vitrine", "")
     manually_provided_urls = [u.strip() for u in params.get("autres_canaux", "").split(",") if u.strip()]
 
     autres_found = {}
-    if manually_provided_urls:
-        # Match each URL to a known canal name, or use domain as name
-        for url in manually_provided_urls:
-            # Identify canal name from URL domain
-            canal_name = url  # fallback
-            for target in AUTRES_CANAUX_TARGETS:
-                if target["domain"].split(".")[0] in url.lower():
-                    canal_name = target["name"]
-                    break
+
+    # 1. Use manually provided URLs first
+    for url in manually_provided_urls:
+        canal_name = url
+        for target in AUTRES_CANAUX_TARGETS:
+            if target["domain"].split(".")[0] in url.lower():
+                canal_name = target["name"]
+                break
+        try:
+            data = await scrape_autre_canal(url, canal_name, mvi, vitrine)
+            autres_found[canal_name] = data
+        except Exception as e:
+            autres_found[canal_name] = {"available": False, "canal": canal_name, "url": url, "reason": str(e)}
+
+    # 2. Auto-detect via Google Search (find top cited pages for this venue)
+    try:
+        google_results = await search_venue_online(
+            params.get("venue_name", ""),
+            params.get("address", ""),
+            params.get("website", "")
+        )
+        for r in google_results:
+            canal_name = r["canal_name"]
+            if canal_name in autres_found:
+                continue  # already have this one from manual
             try:
-                data = await scrape_autre_canal(url, canal_name, mvi, vitrine)
+                data = await scrape_autre_canal(r["url"], canal_name, mvi, vitrine)
                 autres_found[canal_name] = data
             except Exception as e:
-                autres_found[canal_name] = {"available": False, "canal": canal_name, "url": url, "reason": str(e)}
+                autres_found[canal_name] = {"available": False, "canal": canal_name, "url": r["url"], "reason": str(e)}
+    except Exception:
+        pass
 
     if autres_found:
         results["autres_canaux"] = {"available": True, "channels": autres_found}
     else:
-        results["autres_canaux"] = {"available": False, "reason": "Aucune URL de canal fournie"}
+        results["autres_canaux"] = {"available": False, "reason": "Aucun canal tiers trouvé"}
 
     # Scrape linktree if found in instagram bio OR provided in params
     linktree_url = results.get("instagram", {}).get("linktree_url") or params.get("linktree", "")
