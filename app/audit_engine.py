@@ -250,14 +250,8 @@ def _precompute_quanti(venue_params: dict, scraped: dict) -> dict:
         # Direct detection — phones found in scraped bio
         ig_has_mvi = mvi_norm and any(mvi_norm in p or p in mvi_norm for p in ig_phones)
     else:
-        # Instagram scraping blocked from server → cross-check with GMB
-        # If GMB phone (verified via Places API) = MVI, mark as OK
-        # The MVI is the same number across channels — GMB confirmation is reliable
-        gmb_phone_norm = re.sub(r'[\s.\-]', '', gmb.get('phone', '').replace('+33', '0'))
-        if gmb_phone_norm and mvi_norm and (mvi_norm in gmb_phone_norm or gmb_phone_norm in mvi_norm):
-            ig_has_mvi = True  # MVI confirmed via GMB — assume same in Instagram
-        else:
-            ig_has_mvi = None  # Can't determine
+        # No phones found — scraping likely blocked (datacenter IP without ScraperAPI key)
+        ig_has_mvi = None
 
     # RwG: trust the param
     rwg_quanti = venue_params.get('rwg_active', 'non').lower() == 'oui'

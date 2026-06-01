@@ -169,16 +169,46 @@ async def scrape_instagram(url: str, linktree_url: str = "") -> dict:
     if not url:
         return {"available": False, "reason": "URL non fournie"}
 
-    # ── Try httpx static fetch first (bypasses Playwright bot detection) ──────
-    html, static_text = "", ""
-    try:
-        html, static_text = await _fetch_instagram_static(url)
-    except Exception:
-        pass
+    # ── Route Instagram through ScraperAPI if key set (residential IP bypass) ─
+    scraper_api_key = os.getenv("SCRAPER_API_KEY", "")
+    if scraper_api_key:
+        # ScraperAPI routes through residential IPs → Instagram won't block
+        proxy_url = f"https://api.scraperapi.com/?api_key={scraper_api_key}&url={urllib.parse.quote(url)}&device_type=mobile&keep_headers=true"
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                resp = await client.get(proxy_url, headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"})
+                html_proxy = resp.text
+                # Extract bio from meta tags
+                meta = re.search(r'property="og:description"[^>]+content="([^"]{0,500})"', html_proxy)
+                if not meta:
+                    meta = re.search(r'name="description"[^>]+content="([^"]{0,500})"', html_proxy)
+                bio_text = meta.group(1) if meta else ""
+                # Extract phone from full HTML
+                phones_proxy = re.findall(r'(?:0|\+33)\s?[1-9](?:[\s.\-]?\d{2}){4}', html_proxy)
+                joy_proxy = _find_joy_mentions(bio_text, html_proxy)
+                linktree_match = re.search(r'https?://linktr\.ee/\S+', html_proxy)
+                lt_url = linktree_match.group(0) if linktree_match else linktree_url or ""
+                lt_in_bio = bool(lt_url and "linktr" in html_proxy[:3000])
+                phone_norm = [re.sub(r'[\s.\-]', '', p) for p in phones_proxy]
+                return {
+                    "available": True,
+                    "url": url,
+                    "bio": bio_text,
+                    "full_text": html_proxy[:4000],
+                    "joy_links_in_bio": joy_proxy,
+                    "has_linktree": bool(lt_url),
+                    "linktree_in_bio": lt_in_bio,
+                    "linktree_url": lt_url or None,
+                    "post_count": None,
+                    "phone_numbers_found": phones_proxy,
+                    "phone_numbers_normalized": phone_norm,
+                    "source": "scraperapi",
+                }
+        except Exception as e:
+            pass  # Fall through to Playwright
 
-    # Check if httpx got useful content (bio/phone data)
-    static_phones = re.findall(r'(?:0|\+33)\s?[1-9](?:[\s.\-]?\d{2}){4}', static_text + html)
-    static_joy = _find_joy_mentions(static_text, html)
+    # ── Direct Playwright scraping (works with residential IP / local) ─────────
+    static_phones, static_joy = [], []
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -199,8 +229,6 @@ async def scrape_instagram(url: str, linktree_url: str = "") -> dict:
                 pass
             text = await page.evaluate("document.body.innerText")
             html = await page.content()
-            # Merge httpx static data with Playwright data
-            text = text + " " + static_text
             links = _extract_links(html)
             joy_links = _find_joy_mentions(text, html)
             # Detect Linktree in links or text
@@ -223,10 +251,10 @@ async def scrape_instagram(url: str, linktree_url: str = "") -> dict:
             bio_match = re.search(r'meta.*?description.*?content="([^"]{0,500})"', html, re.IGNORECASE)
             bio = bio_match.group(1) if bio_match else text[:500]
             post_match = re.search(r'(\d+)\s+publications?', text, re.IGNORECASE)
-            # Search phone numbers in text + HTML + httpx static data (bio may be truncated)
+            # Search phone numbers in text + HTML
             phone_in_text = re.findall(r'(?:0|\+33)\s?[1-9](?:[\s.\-]?\d{2}){4}', text)
             phone_in_html = re.findall(r'(?:0|\+33)\s?[1-9](?:[\s.\-]?\d{2}){4}', html)
-            phone_numbers = list(set(phone_in_text + phone_in_html + static_phones))
+            phone_numbers = list(set(phone_in_text + phone_in_html))
             # Normalize: remove spaces/dots for easy comparison
             phone_normalized = [re.sub(r'[\s.\-]', '', p) for p in phone_numbers]
             return {
