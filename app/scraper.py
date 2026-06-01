@@ -635,57 +635,31 @@ async def scrape_all_channels(params: dict) -> dict:
         results["saas"] = {"available": True, "applicable": False, "reason": "Segment 1 — non applicable"}
 
     # ── Autres canaux (Segment 1 only) ───────────────────────────────────────
+    # IMPORTANT: Only use manually provided URLs — NO auto-detection (too unreliable in production)
     mvi = params.get("mvi", "")
     vitrine = params.get("vitrine", "")
-    venue_name = params.get("venue_name", "")
     manually_provided_urls = [u.strip() for u in params.get("autres_canaux", "").split(",") if u.strip()]
 
-    # Check website outbound links for known directories
-    website_links = results.get("website", {}).get("full_text", "") + " ".join(
-        results.get("website", {}).get("iframes_src", [])
-    )
-
     autres_found = {}
-    for target in AUTRES_CANAUX_TARGETS:
-        domain = target["domain"]
-        canal_name = target["name"]
-        profile_url = None
-
-        # 1. Check if URL was manually provided
-        for u in manually_provided_urls:
-            if domain.split(".")[0] in u.lower():
-                profile_url = u
-                break
-
-        # 2. Check if venue website links to this directory
-        if not profile_url:
-            found = re.search(rf'https?://[^\s"\'<>]*{re.escape(domain)}[^\s"\'<>]*', website_links)
-            if found:
-                profile_url = found.group(0)
-
-        # 3. Auto-search on the directory
-        if not profile_url and segment == "1":
+    if manually_provided_urls:
+        # Match each URL to a known canal name, or use domain as name
+        for url in manually_provided_urls:
+            # Identify canal name from URL domain
+            canal_name = url  # fallback
+            for target in AUTRES_CANAUX_TARGETS:
+                if target["domain"].split(".")[0] in url.lower():
+                    canal_name = target["name"]
+                    break
             try:
-                profile_url = await _find_venue_on_directory(target, venue_name)
-            except Exception:
-                profile_url = None
-
-        if profile_url:
-            try:
-                data = await scrape_autre_canal(profile_url, canal_name, mvi, vitrine)
+                data = await scrape_autre_canal(url, canal_name, mvi, vitrine)
                 autres_found[canal_name] = data
             except Exception as e:
-                autres_found[canal_name] = {"available": False, "canal": canal_name, "reason": str(e)}
+                autres_found[canal_name] = {"available": False, "canal": canal_name, "url": url, "reason": str(e)}
 
     if autres_found:
-        results["autres_canaux"] = {
-            "available": True,
-            "channels": autres_found,
-        }
-    elif manually_provided_urls:
-        results["autres_canaux"] = {"available": True, "channels": {}}
+        results["autres_canaux"] = {"available": True, "channels": autres_found}
     else:
-        results["autres_canaux"] = {"available": False, "reason": "Aucun canal tiers détecté"}
+        results["autres_canaux"] = {"available": False, "reason": "Aucune URL de canal fournie"}
 
     # Scrape linktree if found in instagram bio OR provided in params
     linktree_url = results.get("instagram", {}).get("linktree_url") or params.get("linktree", "")

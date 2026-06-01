@@ -243,8 +243,15 @@ def _precompute_quanti(venue_params: dict, scraped: dict) -> dict:
     ig_quanti = (ig_joy_in_bio or ig_lt_ok) if ig.get('available') else None
 
     # MVI in instagram bio
+    # If scraping returned no phone numbers at all, Instagram was likely blocked → unknown (None)
+    # If phones were found but MVI not among them → KO (False)
     ig_phones = ig.get('phone_numbers_normalized', [])
-    ig_has_mvi = mvi_norm and any(mvi_norm in p or p in mvi_norm for p in ig_phones)
+    if not ig.get('available'):
+        ig_has_mvi = None  # not scraped
+    elif not ig_phones:
+        ig_has_mvi = None  # likely blocked, can't determine
+    else:
+        ig_has_mvi = mvi_norm and any(mvi_norm in p or p in mvi_norm for p in ig_phones)
 
     # RwG: trust the param
     rwg_quanti = venue_params.get('rwg_active', 'non').lower() == 'oui'
@@ -364,7 +371,10 @@ Le setup min est OK/KO indépendamment des canaux de fuite. Définitions stricte
 - NE JAMAIS évaluer la position Linktree si `linktree_in_bio = False`.
 
 **B) Numéro MVI (4 pts max) :**
-- Le MVI est `{venue_params.get('mvi', '')}`. Normalise (sans espaces) et cherche dans `phone_numbers_normalized`. Si présent → ok (+4). Si absent → KO (+0).
+- Le MVI est `{venue_params.get('mvi', '')}`.
+- Si `instagram_has_mvi = True` (pré-calculé) → ok (+4).
+- Si `instagram_has_mvi = False` → KO (+0). Detail: "Point de fuite : numéro MVI {venue_params.get('mvi','')} absent de la bio Instagram."
+- Si `instagram_has_mvi = None` (scraping Instagram bloqué, aucun numéro détecté) → status "partial", points = 2, detail: "Non vérifiable automatiquement — scraping Instagram bloqué côté serveur. À vérifier manuellement : le numéro {venue_params.get('mvi','')} est-il dans la bio ?"
 - Ce critère est INDÉPENDANT du lien de réservation.
 
 **C) Activité groupe :**
@@ -445,18 +455,23 @@ def _force_quanti(audit: dict, facts: dict):
         if forced_value is not None and ch_key in channels:
             channels[ch_key]["quanti_ok"] = forced_value
 
-    # Force MVI criterion in instagram
+    # Force MVI criterion in instagram based on pre-computed fact
     ig = channels.get("instagram", {})
-    mvi_forced = facts.get("instagram_has_mvi")
-    if mvi_forced is not None and ig.get("criteria"):
+    mvi_fact = facts.get("instagram_has_mvi")  # True=found, False=not found, None=can't verify
+    if ig.get("criteria"):
         for c in ig["criteria"]:
             if "mvi" in c.get("label", "").lower() or "numéro" in c.get("label", "").lower():
-                if mvi_forced:
+                if mvi_fact is True:
                     c["status"] = "ok"
                     c["points"] = c.get("max_points", 4)
-                else:
+                elif mvi_fact is False:
                     c["status"] = "ko"
                     c["points"] = 0
+                elif mvi_fact is None:
+                    # Can't verify (Instagram blocked in prod) — show as partial
+                    c["status"] = "partial"
+                    c["points"] = c.get("max_points", 4) // 2
+                    c["detail"] = f"Non vérifiable automatiquement (Instagram bloqué côté serveur). Vérifier manuellement si le numéro MVI est dans la bio."
 
 
 def _post_process_scores(audit: dict):
