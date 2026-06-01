@@ -141,9 +141,45 @@ async def scrape_website(url: str) -> dict:
             await browser.close()
 
 
+async def _fetch_instagram_static(url: str) -> tuple[str, str]:
+    """Try fetching Instagram with httpx + mobile UA (bypasses Playwright detection)."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=15) as client:
+        resp = await client.get(url)
+        html = resp.text
+        # Extract visible text from meta tags + JSON blobs (Instagram stores bio in JSON)
+        # Meta description contains the bio
+        meta = re.search(r'<meta[^>]+property="og:description"[^>]+content="([^"]{0,500})"', html)
+        meta_desc = meta.group(1) if meta else ""
+        # Also look in JSON script tags for biography
+        bio_json = re.search(r'"biography"\s*:\s*"([^"]{0,500})"', html)
+        biography = bio_json.group(1) if bio_json else ""
+        text = meta_desc + " " + biography
+        return html, text
+
+
 async def scrape_instagram(url: str, linktree_url: str = "") -> dict:
     if not url:
         return {"available": False, "reason": "URL non fournie"}
+
+    # ── Try httpx static fetch first (bypasses Playwright bot detection) ──────
+    html, static_text = "", ""
+    try:
+        html, static_text = await _fetch_instagram_static(url)
+    except Exception:
+        pass
+
+    # Check if httpx got useful content (bio/phone data)
+    static_phones = re.findall(r'(?:0|\+33)\s?[1-9](?:[\s.\-]?\d{2}){4}', static_text + html)
+    static_joy = _find_joy_mentions(static_text, html)
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
@@ -163,6 +199,8 @@ async def scrape_instagram(url: str, linktree_url: str = "") -> dict:
                 pass
             text = await page.evaluate("document.body.innerText")
             html = await page.content()
+            # Merge httpx static data with Playwright data
+            text = text + " " + static_text
             links = _extract_links(html)
             joy_links = _find_joy_mentions(text, html)
             # Detect Linktree in links or text
@@ -185,10 +223,10 @@ async def scrape_instagram(url: str, linktree_url: str = "") -> dict:
             bio_match = re.search(r'meta.*?description.*?content="([^"]{0,500})"', html, re.IGNORECASE)
             bio = bio_match.group(1) if bio_match else text[:500]
             post_match = re.search(r'(\d+)\s+publications?', text, re.IGNORECASE)
-            # Search phone numbers in BOTH visible text AND raw HTML (bio may be truncated in text)
+            # Search phone numbers in text + HTML + httpx static data (bio may be truncated)
             phone_in_text = re.findall(r'(?:0|\+33)\s?[1-9](?:[\s.\-]?\d{2}){4}', text)
             phone_in_html = re.findall(r'(?:0|\+33)\s?[1-9](?:[\s.\-]?\d{2}){4}', html)
-            phone_numbers = list(set(phone_in_text + phone_in_html))
+            phone_numbers = list(set(phone_in_text + phone_in_html + static_phones))
             # Normalize: remove spaces/dots for easy comparison
             phone_normalized = [re.sub(r'[\s.\-]', '', p) for p in phone_numbers]
             return {
@@ -795,11 +833,17 @@ async def scrape_all_channels(params: dict) -> dict:
     else:
         results["saas"] = {"available": True, "applicable": False, "reason": "Segment 1 — non applicable"}
 
-    # ── Instagram MVI via Google (if direct scraping was blocked) ────────────
+    # ── Instagram MVI via Google (last resort if both httpx + Playwright blocked) ──
     ig_data = results.get("instagram", {})
-    if ig_data.get("available") and not ig_data.get("phone_numbers_normalized"):
-        # Instagram scraping returned no phones → try Google snippet
+    mvi_norm = re.sub(r'[\s.\-+]', '', params.get('mvi', '').replace('+33', '0'))
+    ig_phones_norm = ig_data.get("phone_numbers_normalized", [])
+
+    if ig_data.get("available") and not ig_phones_norm and mvi_norm:
+        # Neither httpx nor Playwright found phones → search Google for MVI in Instagram context
         try:
+            handle = re.search(r'instagram\.com/([^/?]+)', params.get("instagram", ""))
+            handle_str = handle.group(1) if handle else params.get("venue_name", "")
+            # Search Google specifically for the phone in Instagram context
             google_ig = await get_instagram_bio_via_google(
                 params.get("instagram", ""), params.get("venue_name", "")
             )

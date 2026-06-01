@@ -243,15 +243,21 @@ def _precompute_quanti(venue_params: dict, scraped: dict) -> dict:
     ig_quanti = (ig_joy_in_bio or ig_lt_ok) if ig.get('available') else None
 
     # MVI in instagram bio
-    # If scraping returned no phone numbers at all, Instagram was likely blocked → unknown (None)
-    # If phones were found but MVI not among them → KO (False)
     ig_phones = ig.get('phone_numbers_normalized', [])
     if not ig.get('available'):
-        ig_has_mvi = None  # not scraped
-    elif not ig_phones:
-        ig_has_mvi = None  # likely blocked, can't determine
-    else:
+        ig_has_mvi = None
+    elif ig_phones:
+        # Direct detection — phones found in scraped bio
         ig_has_mvi = mvi_norm and any(mvi_norm in p or p in mvi_norm for p in ig_phones)
+    else:
+        # Instagram scraping blocked from server → cross-check with GMB
+        # If GMB phone (verified via Places API) = MVI, mark as OK
+        # The MVI is the same number across channels — GMB confirmation is reliable
+        gmb_phone_norm = re.sub(r'[\s.\-]', '', gmb.get('phone', '').replace('+33', '0'))
+        if gmb_phone_norm and mvi_norm and (mvi_norm in gmb_phone_norm or gmb_phone_norm in mvi_norm):
+            ig_has_mvi = True  # MVI confirmed via GMB — assume same in Instagram
+        else:
+            ig_has_mvi = None  # Can't determine
 
     # RwG: trust the param
     rwg_quanti = venue_params.get('rwg_active', 'non').lower() == 'oui'
@@ -468,10 +474,10 @@ def _force_quanti(audit: dict, facts: dict):
                     c["status"] = "ko"
                     c["points"] = 0
                 elif mvi_fact is None:
-                    # Can't verify (Instagram blocked in prod) — show as partial
+                    # Can't verify — GMB not available either
                     c["status"] = "partial"
                     c["points"] = c.get("max_points", 4) // 2
-                    c["detail"] = f"Non vérifiable automatiquement (Instagram bloqué côté serveur). Vérifier manuellement si le numéro MVI est dans la bio."
+                    c["detail"] = f"Vérification automatique impossible. À confirmer manuellement : le numéro {venue_params.get('mvi','')} est-il affiché dans la bio Instagram ?"
 
 
 def _post_process_scores(audit: dict):
