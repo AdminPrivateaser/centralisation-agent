@@ -21,6 +21,13 @@ EXCLUSION_DOMAINS = {
     "sevenrooms.com", "restoo.fr", "guestonline.io",
     # Delivery (out of scope)
     "ubereats.com", "deliveroo.fr", "justeat.fr",
+    # Annuaires bar/resto spécialisés (concurrents ou hors scope)
+    "timetobar.fr", "time-to-bar.fr",
+    "lesbarres.fr", "les-barres.fr",
+    "reserveunbar.com", "reserve-un-bar.com",
+    "mistergoodbeer.com", "mister-good-beer.com",
+    "kaktus.fr", "kaktusbar.fr",
+    "100salles.com", "100-salles.com",
     # Joy/Privateaser already audited
     "privateaser.com", "joy.io", "prvt.re", "widget.privateaser.com",
 }
