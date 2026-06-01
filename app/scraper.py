@@ -831,22 +831,36 @@ async def scrape_all_channels(params: dict) -> dict:
         except Exception as e:
             autres_found[canal_name] = {"available": False, "canal": canal_name, "url": url, "reason": str(e)}
 
-    # 2. Auto-detect via Google Search (find top cited pages for this venue)
+    # 2. Auto-detect via Google Search — evaluate from SERP snippet directly
+    # No secondary page scraping needed: Google snippet already shows what's indexed
     try:
         google_results = await search_venue_online(
             params.get("venue_name", ""),
             params.get("address", ""),
             params.get("website", "")
         )
+        joy_keywords = ["privateaser", "joy.io", "prvt.re", "widget.privateaser"]
         for r in google_results:
             canal_name = r["canal_name"]
             if canal_name in autres_found:
-                continue  # already have this one from manual
-            try:
-                data = await scrape_autre_canal(r["url"], canal_name, mvi, vitrine)
-                autres_found[canal_name] = data
-            except Exception as e:
-                autres_found[canal_name] = {"available": False, "canal": canal_name, "url": r["url"], "reason": str(e)}
+                continue
+            snippet = (r.get("snippet", "") + " " + r.get("title", "")).lower()
+            # Check if Joy/Privateaser is mentioned in the Google snippet
+            has_joy = any(kw in snippet for kw in joy_keywords)
+            # Check for other booking tools (signal of non-centralisation)
+            has_other_booking = any(kw in snippet for kw in [
+                "réserver", "reserver", "booking", "réservation"
+            ]) and not has_joy
+            autres_found[canal_name] = {
+                "available": True,
+                "canal": canal_name,
+                "url": r["url"],
+                "has_joy_or_vitrine": has_joy,
+                "has_mvi_phone": False,  # can't detect phone from snippet
+                "source": "google_snippet",
+                "snippet": r.get("snippet", "")[:200],
+                "detail_snippet": snippet[:300],
+            }
     except Exception:
         pass
 
