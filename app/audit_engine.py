@@ -261,11 +261,16 @@ def _precompute_quanti(venue_params: dict, scraped: dict) -> dict:
     # GMB: quanti OK = Vitrine visible dans la section réservations (Knowledge Panel)
     gmb_quanti = None
     if gmb.get('available'):
-        if gmb.get('has_vitrine_in_reservations'):
-            gmb_quanti = True  # confirmed via Knowledge Panel
-        elif gmb.get('source') == 'google_places_api_v2':
+        other_saas = bool(gmb.get('other_rwg_partners') or gmb.get('rwg_has_other_saas'))
+        if gmb.get('has_vitrine_in_reservations') and not other_saas:
+            gmb_quanti = True  # Vitrine confirmed in Réservations, no competing SaaS
+        elif gmb.get('has_vitrine_in_reservations') and other_saas:
+            # Uncertain: Vitrine URL might come from website field (not Réservations section)
+            # while another SaaS (Zenchef etc.) is actually in the Réservations section → let Claude decide
+            gmb_quanti = None
+        elif gmb.get('source') == 'google_places_api_v2' and not other_saas:
             gmb_quanti = bool(gmb.get('joy_in_website') or gmb.get('vitrine_as_website'))
-        elif gmb.get('joy_links'):
+        elif gmb.get('joy_links') and not other_saas:
             gmb_quanti = True
 
     return {
@@ -377,7 +382,7 @@ Pour chaque canal (Tripadvisor, Mappy, etc.) évalue DEUX critères si disponibl
 ### Règle QUANTI (setup min) :
 Le setup min est OK/KO indépendamment des canaux de fuite. Définitions strictes :
 - **Site Web** : quanti_ok = True si au moins un lien Joy/Privateaser/widget existe quelque part sur le site (iframes incluses). Un téléphone non-MVI est un POINT DE FUITE quali uniquement, jamais un motif de KO quanti.
-- **GMB** : quanti_ok = True si un lien Vitrine Événementielle (privateaser.com/lieu/...) est dans la section réservations.
+- **GMB** : quanti_ok = True si un lien Vitrine Événementielle (privateaser.com/lieu/...) est dans la section réservations. Si `gmb_quanti = None` (non déterminable par Python) : évalue en regardant `has_vitrine_in_reservations`, `other_rwg_partners`, et `joy_in_website`. **Si `other_rwg_partners` est non vide ET `has_vitrine_in_reservations=False` → quanti KO** (un autre SaaS est le partenaire de réservation Maps). Si `joy_in_website=True` mais Vitrine absente de la section Réservations → ne compte pas pour le quanti (le website GMB ≠ section Réservations).
 - **RwG** : quanti_ok = True si `rwg_active` est "oui". **Si `rwg_has_other_saas=True` dans les données Maps : note explicitement dans quanti_detail que d'autres partenaires SaaS sont présents (`other_rwg_partners`) en plus de Joy — c'est un point de fuite RwG.** Ne demande pas de vérification manuelle si le paramètre Salesforce confirme.
 - **Instagram** : quanti_ok = True si la bio contient un lien Joy/Vitrine OU si le Linktree (présent EN BIO) contient un lien Joy/Vitrine dans les 2 premiers liens. **Segment 2 — Linktree** : si un lien SaaS Individual Booking (ex: Zenchef) est en position 1 du Linktree, le lien Joy en position 2 reste dans le top-2 des liens de réservation → quanti OK. Mentionne explicitement dans le detail : "Zenchef en position 1 (autorisé Segment 2), Joy/Vitrine en position 2".
 

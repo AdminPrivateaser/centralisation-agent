@@ -738,9 +738,16 @@ async def scrape_google_maps_reservations(place_id: str) -> dict:
             resp = await client.get(proxy_url)
             html = resp.text
 
+        # Scope Vitrine detection to near "Réservation" text — prevents false positives
+        # when the venue's GMB website field = Vitrine URL (appears elsewhere on the page)
+        reservation_match = re.search(r'[Rr][ée]servation[s]?.{0,3000}', html, re.DOTALL)
+        reservation_scope = reservation_match.group(0) if reservation_match else ""
+        joy_links_scoped = _find_joy_mentions("", reservation_scope) if reservation_scope else []
+        has_vitrine = any("privateaser.com/lieu" in l for l in joy_links_scoped)
+        has_widget = any("prvt.re" in l or "widget.privateaser" in l or "booking-widget" in l for l in joy_links_scoped)
+
+        # Full-page joy links (for reference)
         joy_links = _find_joy_mentions("", html)
-        has_vitrine = any("privateaser.com/lieu" in l for l in joy_links)
-        has_widget = any("prvt.re" in l or "widget.privateaser" in l or "booking-widget" in l for l in joy_links)
         rwg_joy = bool(re.search(r'fournis en partenariat avec Joy|powered by Joy', html, re.IGNORECASE))
 
         # Detect other SaaS booking partners present in the Maps page (RwG doublons)
@@ -849,10 +856,13 @@ async def scrape_google_knowledge_panel(venue_name: str, address: str) -> dict:
             for kw in group_keywords_kp[:5]:
                 kp_section += kw[:200] + " "
 
-            # Also search in HTML for reservation links
+            # Search for reservation links ONLY near "Réservation" section text
+            # (prevents false positives when Vitrine = GMB website field, not Réservations)
+            kp_reservation_match = re.search(r'[Rr][ée]servation[s]?.{0,2000}', html, re.DOTALL)
+            kp_reservation_scope = kp_reservation_match.group(0) if kp_reservation_match else html
             all_links_in_kp = re.findall(
                 r'href="(https://[^"]*(?:privateaser|prvt\.re|joy\.io|widget\.privateaser)[^"]*)"',
-                html
+                kp_reservation_scope
             )
 
             # ── Doublon detection ─────────────────────────────────────────────
