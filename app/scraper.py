@@ -123,7 +123,10 @@ async def scrape_website(url: str) -> dict:
             joy_links = _find_joy_mentions(text, html)
             email_links = [l for l in links if "mailto:" in l]
             phone_in_text = re.findall(r'(?:0[1-9])(?:[\s.\-]?\d{2}){4}', text)
-            phone_mentions = re.findall(r'(?:tel:|tél\.|téléphone|appelez)[^\n<]{0,80}', text, re.IGNORECASE)
+            phone_mentions = re.findall(
+                r'(?:tel:|tél\.|téléphone|appelez|envoyez[- ]un SMS|contactez[- ]nous|SMS au|réservation par)[^\n<]{0,120}',
+                text, re.IGNORECASE
+            )
             return {
                 "available": True,
                 "url": url,
@@ -186,9 +189,13 @@ async def scrape_instagram(url: str, linktree_url: str = "") -> dict:
                 # Extract phone from full HTML
                 phones_proxy = re.findall(r'(?:0|\+33)\s?[1-9](?:[\s.\-]?\d{2}){4}', html_proxy)
                 joy_proxy = _find_joy_mentions(bio_text, html_proxy)
-                linktree_match = re.search(r'https?://linktr\.ee/\S+', html_proxy)
-                lt_url = linktree_match.group(0) if linktree_match else linktree_url or ""
-                lt_in_bio = bool(lt_url and "linktr" in html_proxy[:3000])
+                # Stop at query params to avoid capturing UTM-bloated URLs
+                linktree_match = re.search(r'https?://linktr\.ee/[^\s"\'<>?&]+', html_proxy)
+                detected_lt_url = linktree_match.group(0) if linktree_match else ""
+                lt_url = detected_lt_url or linktree_url or ""
+                # If the linktr.ee URL appears anywhere in the page HTML, it's in the bio
+                # (Instagram's public HTML only surfaces the profile bio link)
+                lt_in_bio = bool(detected_lt_url) or bool(linktree_url and "linktr" in bio_text)
                 phone_norm = [re.sub(r'[\s.\-]', '', p) for p in phones_proxy]
                 return {
                     "available": True,
@@ -198,6 +205,7 @@ async def scrape_instagram(url: str, linktree_url: str = "") -> dict:
                     "joy_links_in_bio": joy_proxy,
                     "has_linktree": bool(lt_url),
                     "linktree_in_bio": lt_in_bio,
+                    "linktree_detected_in_html": bool(detected_lt_url),
                     "linktree_url": lt_url or None,
                     "post_count": None,
                     "phone_numbers_found": phones_proxy,
@@ -265,6 +273,7 @@ async def scrape_instagram(url: str, linktree_url: str = "") -> dict:
                 "joy_links_in_bio": joy_links,
                 "has_linktree": bool(linktree_url),
                 "linktree_in_bio": linktree_in_bio,
+                "linktree_detected_in_html": bool(linktree_links) or bool(re.search(r'linktr\.ee', text[:800])),
                 "linktree_url": linktree_url or None,
                 "post_count": post_match.group(1) if post_match else None,
                 "phone_numbers_found": phone_numbers,
@@ -504,8 +513,9 @@ async def scrape_linktree(url: str) -> dict:
             try:
                 button_links = await page.evaluate("""
                     () => {
-                        // Get all <a> tags that look like Linktree buttons (external links)
-                        const anchors = Array.from(document.querySelectorAll('a[href]'));
+                        // Use main content area to exclude nav/footer links
+                        const container = document.querySelector('main') || document.body;
+                        const anchors = Array.from(container.querySelectorAll('a[href]'));
                         return anchors
                             .map(a => a.href)
                             .filter(href =>
@@ -518,7 +528,11 @@ async def scrape_linktree(url: str) -> dict:
                                 !href.includes('twitter.com') &&
                                 !href.includes('youtube.com') &&
                                 !href.includes('google.com/maps') &&
-                                !href.includes('apple.com/maps')
+                                !href.includes('apple.com/maps') &&
+                                !href.match(/\/(privacy|terms|cookies|about|contact)/i) &&
+                                !href.includes('trustpilot') &&
+                                !href.includes('apple.com/app') &&
+                                !href.includes('play.google.com')
                             );
                     }
                 """)
@@ -735,11 +749,21 @@ async def scrape_google_knowledge_panel(venue_name: str, address: str) -> dict:
             kp_patterns = [
                 r'(?:Réservation|Réservations|réserver)[^\n]{0,2000}',
                 r'(?:fournis en partenariat|booking partner|reserve with)[^\n]{0,500}',
+                r'(?:À propos|About|De l\'établissement)[^\n]{0,1000}',
             ]
             for pat in kp_patterns:
                 m = re.search(pat, text, re.IGNORECASE | re.DOTALL)
                 if m:
-                    kp_section += m.group(0) + " "
+                    kp_section += m.group(0)[:600] + " "
+
+            # Capture group/event keywords from full page (GMB venue description often here)
+            group_keywords_kp = re.findall(
+                r'(?:privatisable|réservable|privatisation|anniversaire|afterwork|groupe|'
+                r'séminaire|événement|pots? de départ|team building)[^\n]{0,250}',
+                text, re.IGNORECASE
+            )
+            for kw in group_keywords_kp[:5]:
+                kp_section += kw[:200] + " "
 
             # Also search in HTML for reservation links
             all_links_in_kp = re.findall(
@@ -772,7 +796,8 @@ async def scrape_google_knowledge_panel(venue_name: str, address: str) -> dict:
                 "doublon_detected": doublon_detected,
                 "rwg_joy_detected": rwg_joy_detected,
                 "phones_in_panel": phones,
-                "kp_text": kp_section[:500],
+                "group_keywords_in_kp": group_keywords_kp[:8],
+                "kp_text": kp_section[:800],
             }
         except Exception as e:
             return {"available": False, "reason": str(e)}
@@ -1156,6 +1181,14 @@ async def scrape_all_channels(params: dict) -> dict:
         gmb_data["has_widget_in_reservations"] = kp.get("has_widget_in_reservations", False)
         gmb_data["reservation_links_kp"] = kp.get("reservation_links", [])
         gmb_data["rwg_joy_detected"] = kp.get("rwg_joy_detected", False)
+        # Merge group keywords from KP — editorial keywords often only visible in Knowledge Panel
+        kp_group_keywords = kp.get("group_keywords_in_kp", [])
+        if kp_group_keywords:
+            existing_kw = gmb_data.get("group_keywords_found", [])
+            gmb_data["group_keywords_found"] = list(dict.fromkeys(existing_kw + kp_group_keywords))[:8]
+            gmb_data["has_group_editorial"] = True
+            if not gmb_data.get("editorial_summary"):
+                gmb_data["editorial_summary"] = " | ".join(kp_group_keywords[:3])
         results["gmb"] = gmb_data
     results["google_kp_raw"] = kp  # keep for audit engine
 
@@ -1202,6 +1235,34 @@ async def scrape_all_channels(params: dict) -> dict:
             results["saas"] = {"available": True, "applicable": False, "reason": "Aucun SaaS détecté"}
     else:
         results["saas"] = {"available": True, "applicable": False, "reason": "Segment 1 — non applicable"}
+
+    # ── Trust params-provided Linktree as in-bio when IG scraping is blocked ──────
+    ig_data = results.get("instagram", {})
+    ig_bio = ig_data.get("bio", "")
+    ig_blocked = "isn't available" in ig_bio or "Log in" in ig_bio or len(ig_bio) < 30
+    params_linktree = params.get("linktree", "").strip()
+    if ig_blocked and params_linktree and not ig_data.get("linktree_url"):
+        ig_data["linktree_url"] = params_linktree
+        ig_data["linktree_in_bio"] = True
+        ig_data["linktree_detected_in_html"] = False
+        results["instagram"] = ig_data
+    elif not ig_data.get("linktree_in_bio") and params_linktree and ig_data.get("linktree_url"):
+        # IG was scraped but linktree_in_bio wasn't detected — trust params
+        ig_data["linktree_in_bio"] = True
+        results["instagram"] = ig_data
+
+    # ── Tag non-MVI phones on website (Python pre-computation for Claude) ─────────
+    mvi_norm_ws = re.sub(r'[\s.\-+]', '', params.get('mvi', '').replace('+33', '0'))
+    ws_data = results.get("website", {})
+    if ws_data.get("available") and mvi_norm_ws:
+        all_ws_phones = ws_data.get("phone_numbers_found", [])
+        non_mvi = [
+            p for p in all_ws_phones
+            if mvi_norm_ws not in re.sub(r'[\s.\-]', '', p)
+            and re.sub(r'[\s.\-]', '', p) not in mvi_norm_ws
+        ]
+        ws_data["non_mvi_phones_found"] = non_mvi
+        results["website"] = ws_data
 
     # ── Instagram MVI via Google (last resort if both httpx + Playwright blocked) ──
     ig_data = results.get("instagram", {})

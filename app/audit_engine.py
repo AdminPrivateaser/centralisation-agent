@@ -39,10 +39,10 @@ PLAYBOOK_CONTEXT = """
 - Section réservations : présence du lien Vitrine Événementielle (privateaser.com/lieu/...)
 - Si pas de site web : Vitrine comme website
 
-### Quali (25 pts max) :
-- Section Réservations avec lien Vitrine Événementielle uniquement (pas de doublon widget Joy) : 12 pts (8 si partiel)
+### Quali (18 pts max) :
+- Section Réservations avec lien Vitrine Événementielle uniquement (pas de doublon) : 12 pts (6 si partiel)
 - Éditorial GMB avec mots-clés groupe (privatisation, anniversaire, afterwork) : 6 pts
-- Présence d'au moins un produit avec lien Vitrine Événementielle : 7 pts (bonus)
+- NE PAS évaluer le critère "Produit avec lien Vitrine" — supprimé car non scrappable
 
 ## 🔵 Reserve with Google (RwG) — Segment 1
 
@@ -235,11 +235,13 @@ def _precompute_quanti(venue_params: dict, scraped: dict) -> dict:
     # Website: quanti OK = Joy widget/link found anywhere
     ws_quanti = has_joy(ws) if ws.get('available') else None
 
-    # Instagram: quanti OK = Joy link in bio OR (linktree in bio AND joy in linktree top-2)
+    # Instagram: quanti OK = Joy link in bio OR (linktree accessible from profile AND joy in top-2)
     ig_joy_in_bio = bool(ig.get('joy_links_in_bio'))
     ig_lt_in_bio = ig.get('linktree_in_bio', False)
+    ig_lt_detected = ig.get('linktree_detected_in_html', False)  # found in IG HTML = linked from profile
     lt_position = lt.get('joy_link_position') if lt.get('available') else None
-    ig_lt_ok = ig_lt_in_bio and lt_position is not None and lt_position <= 1  # 0-indexed
+    # linktree is "in bio" if the bio flag is set OR if we detected its URL in the IG page HTML
+    ig_lt_ok = (ig_lt_in_bio or ig_lt_detected) and lt_position is not None and lt_position <= 1
     ig_quanti = (ig_joy_in_bio or ig_lt_ok) if ig.get('available') else None
 
     # MVI in instagram bio
@@ -313,6 +315,9 @@ async def run_audit(venue_params: dict, scraped_data: dict, progress_callback=No
 ### Site Web
 {json.dumps(scraped_data.get('website', {}), ensure_ascii=False, indent=2)}
 
+⚠️ PRÉ-CALCULÉ SITE WEB : numéros NON-MVI détectés = {scraped_data.get('website', {}).get('non_mvi_phones_found', [])}
+→ Si liste non vide : critère "Aucun canal de fuite" = KO automatique. Cite chaque numéro dans le detail.
+
 ### Google My Business
 {json.dumps(scraped_data.get('gmb', {}), ensure_ascii=False, indent=2)}
 
@@ -342,22 +347,26 @@ async def run_audit(venue_params: dict, scraped_data: dict, progress_callback=No
   - Jamais de termes techniques comme `post_count`, `joy_links`, `scraping`, `paramètre`.
 
 ### Règles SITE WEB — critères quali précis :
-- **"CTA groupe dans le header" (8 pts)** : Tout CTA/bouton dans le header qui mène vers une section réservation, privatisation ou événement = OK. Les libellés "Réserver un espace", "Réservations", "Privatisation", "Événements" sont TOUS valides — pas besoin que le mot "groupe" soit explicite dans le label. Ce qui compte : le lien mène bien vers une page ou section liée aux réservations.
+- **"CTA groupe dans le header" (8 pts)** : TOUT CTA/lien dans le header qui pointe vers une section réservation ou privatisation = OK, SANS EXCEPTION. Les libellés "Réserver un espace", "Réservations", "Privatisation", "Événements", "Réserver" sont TOUS valides — jamais de KO si le lien mène vers des réservations, peu importe le libellé exact. NE PAS marquer KO ou Partial pour absence du mot "groupe" dans le label.
 - **"Bloc/section dédié privatisation/groupes/événements" (10 pts)** : Marque OK si le site a une section ou page dédiée aux réservations/groupes. La présence du widget Joy embedé dans une section réservations = OK complet. Ne pas marquer Partial parce que le mot exact "privatisation" n'est pas dans le titre.
 - **"Aucun canal de fuite" (10 pts)** : Sois TRÈS STRICT. Marque KO (0 pts) dès qu'une seule des conditions suivantes est vraie :
-  - Un email direct (ex: lecarlieparis@gmail.com) est mentionné pour réserver ou contacter → Point de fuite email
-  - Un numéro de téléphone NON-MVI (différent de {venue_params.get('mvi','')}) est proposé pour réserver, même en SMS → Point de fuite téléphone
+  - Un email direct est mentionné pour réserver ou contacter → Point de fuite email
+  - Un numéro de téléphone NON-MVI est proposé pour réserver, même en SMS → Point de fuite téléphone
+  - Une mention "Envoyez-nous un SMS au XXXX" ou "Contactez-nous au XXXX" avec un numéro non-MVI → Point de fuite SMS/téléphone
   - Une invitation à "contacter" ou "appeler" avec un numéro non-MVI → Point de fuite
-  Cherche dans `phone_numbers_found` ET dans le texte complet pour des patterns comme "contactez-nous au", "envoyez-nous un SMS", "appelez le".
+  **SOURCE PRIORITAIRE : `non_mvi_phones_found`** — si ce champ est non vide, il contient TOUS les numéros non-MVI détectés sur le site → critère KO automatiquement.
+  Le champ `detail` doit lister EXHAUSTIVEMENT tous les points de fuite (email + chaque téléphone non-MVI trouvé). Format : "Point de fuite : [email xxxx] ; [numéro xxxx affiché dans le footer/page réservation]"
+  Cherche aussi dans `phone_mentions` pour les SMS et dans `full_text` (footer inclus).
 
 ### Règles GMB — critères quali précis :
 - **"Section Réservations avec lien Vitrine Événementielle uniquement" (12 pts)** :
-  - Si seulement la Vitrine Privateaser (privateaser.com/lieu/...) est présente → OK (12/12).
-  - Si la Vitrine + un autre lien externe (ex: site du lieu, autre outil) → Partial (6/12). Point de fuite : doublon de lien dans la section Réservations.
-  - Si doublon Vitrine + Widget Joy → Partial (6/12).
+  - Si seulement la Vitrine Privateaser (privateaser.com/lieu/...) est le SEUL lien dans la section réservations → OK (12/12).
+  - Si la Vitrine est présente MAIS `non_joy_links_in_reservations` contient d'autres URLs (site du lieu, autre outil...) → Partial (6/12). Point de fuite : doublon de lien dans la section Réservations.
+  - Si doublon Vitrine + Widget Joy (`doublon_detected=True`) → Partial (6/12).
+  - IMPORTANT : Le seul cas OK (12/12) est quand la Vitrine est le seul lien. Tout autre lien simultané = Partial.
   - Utilise `doublon_detected`, `has_vitrine_in_reservations`, `non_joy_links_in_reservations` pour détecter les cas.
-- **"Éditorial GMB avec mots-clés groupe" (6 pts)** : évalue via `editorial_summary` ET `group_keywords_found` ET `has_group_editorial`. Si l'une de ces sources contient des mots-clés groupe (privatisable, anniversaire, afterwork, réservable, etc.) → OK. Ne pas mettre KO si le texte contient ces mots même sous d'autres formulations.
-- **"Produit avec lien Vitrine" (7 pts)** : si `joy_in_website=True` (le website GMB = Vitrine Privateaser) → OK. Signal fort que la Vitrine est mise en avant sur la fiche.
+- **"Éditorial GMB avec mots-clés groupe" (6 pts)** : évalue via `editorial_summary`, `group_keywords_found` ET `has_group_editorial`. Si L'UNE de ces sources contient des mots comme 'privatisable', 'réservable', 'anniversaire', 'afterwork', 'privatisation', 'groupe', 'séminaire' → OK (6/6). Ne mettre KO que si AUCUNE de ces trois sources ne contient ces mots.
+- **INTERDIT : NE JAMAIS créer de critère "Produit avec lien Vitrine" ou similaire** — ce critère n'existe plus. Le GMB a exactement 2 critères et 18 pts max (12 + 6). Aucun troisième critère GMB n'est permis.
 
 ### Règles AUTRES CANAUX — critères précis :
 Pour chaque canal (Tripadvisor, Mappy, etc.) évalue DEUX critères si disponibles :
@@ -428,6 +437,15 @@ Données dans `scraped_data["autres_canaux"]["channels"]`. Segment 1 seulement (
 2. Les canaux `saas` et `autres_canaux` dans `channels` si les données sont disponibles
 3. Actions prioritaires triées par gain décroissant (max 5), avec leak_point précis
 4. Scores globaux : globale = quanti×40% + quali×60%
+
+**RÈGLE MULTI-ACTIONS — OBLIGATOIRE :**
+Si un canal a N critères KO distincts, génère N entrées SÉPARÉES dans `priority_actions`. Exemple pour Site Web avec 2 KO (email + téléphone non-MVI) :
+```
+{"priority":1, "channel":"Site Web", "leak_point":"Email direct lecarlieparis@gmail.com", "action":"Supprimer l'email direct ou le remplacer par le formulaire Joy", "gain_pts":5},
+{"priority":2, "channel":"Site Web", "leak_point":"Numéro 06 XX XX XX XX dans le footer et page réservation (non-MVI)", "action":"Retirer le numéro ou le remplacer par le numéro MVI Joy", "gain_pts":5}
+```
+NE JAMAIS fusionner 2 points de fuite différents en 1 seule entrée priority_actions.
+Le champ `priority_action` du canal liste aussi toutes les actions séparées par `\n- `.
 
 Pour RwG : eligible=true si bar/restaurant. Identifie les points de fuite spécifiques.
 """
