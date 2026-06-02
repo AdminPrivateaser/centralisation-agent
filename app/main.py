@@ -209,6 +209,15 @@ async def result(request: Request, audit_id: str):
     })
 
 
+@app.get("/audit/{audit_id}/notion_status")
+async def notion_status(audit_id: str):
+    """Poll endpoint: returns notion_url once Notion page is created."""
+    store = audits.get(audit_id)
+    if not store:
+        return JSONResponse({"notion_url": None})
+    return JSONResponse({"notion_url": store.get("notion_url")})
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}

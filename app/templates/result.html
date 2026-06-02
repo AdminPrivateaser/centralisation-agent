@@ -55,9 +55,11 @@
       <div class="meta">Segment {{ params.segment }} · {{ params.address }} · Audit du {{ now }}</div>
     </div>
     <div class="actions-row">
-      {% if notion_url %}
-      <a href="{{ notion_url }}" target="_blank" class="btn btn-notion">📝 Voir dans Notion</a>
-      {% endif %}
+      <span id="notion-btn-container">
+        {% if notion_url %}
+        <a href="{{ notion_url }}" target="_blank" class="btn btn-notion">📝 Voir dans Notion</a>
+        {% endif %}
+      </span>
       <a href="/" class="btn btn-notion">← Nouvel audit</a>
     </div>
   </div>
@@ -250,5 +252,27 @@
   {% endif %}
 
 </div>
+
+<script>
+  // Poll for Notion URL if not already present (created async after result display)
+  (function() {
+    if (document.querySelector('#notion-btn-container a')) return; // already there
+    const auditId = '{{ audit_id }}';
+    let attempts = 0;
+    const interval = setInterval(async () => {
+      attempts++;
+      if (attempts > 15) { clearInterval(interval); return; } // stop after 30s
+      try {
+        const res = await fetch(`/audit/${auditId}/notion_status`);
+        const data = await res.json();
+        if (data.notion_url) {
+          clearInterval(interval);
+          const container = document.getElementById('notion-btn-container');
+          container.innerHTML = `<a href="${data.notion_url}" target="_blank" class="btn btn-notion">📝 Voir dans Notion</a>`;
+        }
+      } catch(e) {}
+    }, 2000);
+  })();
+</script>
 </body>
 </html>
