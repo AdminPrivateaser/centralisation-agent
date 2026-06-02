@@ -356,20 +356,27 @@ async def scrape_gmb_places_api(venue_name: str, address: str) -> dict:
 
         place_id = place.get("id", "")
 
-        # Step 2: Scrape the Maps page via place_id URL to get the Réservations section links
+        # Step 2: Get Réservations section via ScraperAPI on Google Maps (reliable, residential IP)
         reservation_links = []
-        try:
-            reservation_links = await _scrape_maps_reservations(place_id)
-        except Exception:
-            pass
+        has_reservation_doublon = False
+        joy_in_reservations = False
 
-        joy_in_reservations = any(
-            "joy.io" in l or "privateaser" in l or "prvt.re" in l
-            for l in reservation_links
-        )
-        # Count how many distinct joy/privateaser links are in reservations (doublon check)
+        maps_data = await scrape_google_maps_reservations(place_id)
+        if maps_data.get("available"):
+            reservation_links = maps_data.get("reservation_links", [])
+            has_reservation_doublon = maps_data.get("doublon_detected", False)
+            joy_in_reservations = maps_data.get("has_vitrine_in_reservations", False)
+        else:
+            # Fallback: old Playwright approach
+            try:
+                reservation_links = await _scrape_maps_reservations(place_id)
+                joy_reservation_links = [l for l in reservation_links if "joy.io" in l or "privateaser" in l or "prvt.re" in l]
+                has_reservation_doublon = len(joy_reservation_links) > 1
+                joy_in_reservations = bool(joy_reservation_links)
+            except Exception:
+                pass
+
         joy_reservation_links = [l for l in reservation_links if "joy.io" in l or "privateaser" in l or "prvt.re" in l]
-        has_reservation_doublon = len(joy_reservation_links) > 1
 
         return {
             "available": True,
@@ -574,6 +581,41 @@ async def get_instagram_bio_via_google(instagram_url: str, venue_name: str) -> d
     }
 
 
+async def scrape_google_maps_reservations(place_id: str) -> dict:
+    """
+    Scrape Google Maps place page via ScraperAPI (residential IP)
+    to get the Réservations section links — reliable doublon + RwG detection.
+    """
+    scraper_key = os.getenv("SCRAPER_API_KEY", "")
+    if not scraper_key:
+        return {"available": False, "reason": "SCRAPER_API_KEY not set"}
+
+    maps_url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
+    proxy_url = f"https://api.scraperapi.com/?api_key={scraper_key}&url={urllib.parse.quote(maps_url)}&render=true"
+
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.get(proxy_url)
+            html = resp.text
+
+        joy_links = _find_joy_mentions("", html)
+        has_vitrine = any("privateaser.com/lieu" in l for l in joy_links)
+        has_widget = any("prvt.re" in l or "widget.privateaser" in l or "booking-widget" in l for l in joy_links)
+        rwg_joy = bool(re.search(r'fournis en partenariat avec Joy|powered by Joy', html, re.IGNORECASE))
+
+        return {
+            "available": True,
+            "source": "scraperapi_maps",
+            "reservation_links": joy_links,
+            "has_vitrine_in_reservations": has_vitrine,
+            "has_widget_in_reservations": has_widget,
+            "doublon_detected": has_vitrine and has_widget,
+            "rwg_joy_detected": rwg_joy,
+        }
+    except Exception as e:
+        return {"available": False, "reason": str(e)}
+
+
 async def scrape_google_knowledge_panel(venue_name: str, address: str) -> dict:
     """
     Scrape the Google Search knowledge panel for a venue.
@@ -659,6 +701,124 @@ async def scrape_google_knowledge_panel(venue_name: str, address: str) -> dict:
             return {"available": False, "reason": str(e)}
         finally:
             await browser.close()
+
+
+async def discover_autres_canaux_via_claude(
+    venue_name: str, address: str, venue_website: str = ""
+) -> list[dict]:
+    """
+    Use Claude's built-in web_search to find directory pages for the venue.
+    Then visit each found page via ScraperAPI to check for Joy/Privateaser.
+    """
+    from anthropic import AsyncAnthropic
+    client = AsyncAnthropic()
+
+    city_match = re.search(r'(\d{5})\s+(.+)', address)
+    city = city_match.group(2) if city_match else address.split(",")[-1].strip()
+
+    exclusions = ", ".join([
+        "instagram.com", "facebook.com", "twitter.com", "tiktok.com",
+        "youtube.com", "linkedin.com", "google.com", "thefork.com",
+        "lafourchette.com", "zenchef.com", "opentable.com", "ubereats.com",
+        "deliveroo.fr", "privateaser.com", "joy.io", "prvt.re",
+        "timetobar.fr", "lesbarres.fr", "reserveunbar.com",
+        "mistergoodbeer.com", "kaktus.fr", "100salles.com",
+    ] + ([venue_website.split("/")[2]] if venue_website else []))
+
+    prompt = f"""Cherche "{venue_name} {city}" sur le web et liste les annuaires/sites tiers où ce bar ou restaurant est référencé.
+
+Retourne UNIQUEMENT les URLs trouvées, une par ligne.
+
+EXCLURE obligatoirement : {exclusions}
+EXCLURE aussi : le site officiel du lieu lui-même.
+
+INCLURE : Tripadvisor, Mappy, PagesJaunes, Yelp, SortiraParIs, Bonjour RATP, TimeOut, Booking.com, Michelin, Foursquare, ou tout autre annuaire.
+
+Retourne au maximum 6 URLs. Format : une URL par ligne, rien d'autre."""
+
+    found_urls = []
+    try:
+        response = await client.messages.create(
+            model="claude-3-5-haiku-20241022",
+            max_tokens=500,
+            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        # Extract URLs from response text
+        for block in response.content:
+            if hasattr(block, "text"):
+                urls = re.findall(r'https?://[^\s\n"\'<>]+', block.text)
+                found_urls.extend(urls)
+    except Exception:
+        return []
+
+    # Deduplicate and filter
+    seen_domains = set()
+    clean_urls = []
+    for url in found_urls:
+        dom_match = re.search(r'https?://(?:www\.)?([^/?]+)', url)
+        if not dom_match:
+            continue
+        domain = dom_match.group(1)
+        if any(ex in domain for ex in EXCLUSION_DOMAINS):
+            continue
+        if venue_website and domain in venue_website:
+            continue
+        if domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+        clean_urls.append({"url": url, "domain": domain})
+
+    # Visit each page via ScraperAPI or direct to get real content
+    scraper_key = os.getenv("SCRAPER_API_KEY", "")
+    mvi = ""  # will be set by caller
+    vitrine = ""  # will be set by caller
+
+    results = []
+    for item in clean_urls[:6]:
+        url = item["url"]
+        domain = item["domain"]
+        canal_name = domain.split(".")[0].capitalize()
+        for target in AUTRES_CANAUX_TARGETS:
+            if target["domain"].split(".")[0] in domain:
+                canal_name = target["name"]
+                break
+        try:
+            if scraper_key:
+                proxy_url = f"https://api.scraperapi.com/?api_key={scraper_key}&url={urllib.parse.quote(url)}"
+                async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client_http:
+                    resp = await client_http.get(proxy_url)
+                    page_html = resp.text
+            else:
+                async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client_http:
+                    resp = await client_http.get(url, headers={
+                        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+                    })
+                    page_html = resp.text
+
+            joy_links = _find_joy_mentions("", page_html)
+            phone_numbers = re.findall(r'(?:0|\+33)\s?[1-9](?:[\s.\-]?\d{2}){4}', page_html)
+            has_joy = bool(joy_links)
+
+            results.append({
+                "available": True,
+                "canal": canal_name,
+                "url": url,
+                "has_joy_or_vitrine": has_joy,
+                "joy_links": joy_links,
+                "has_mvi_phone": False,  # set later in precompute
+                "phone_numbers": phone_numbers[:3],
+                "source": "claude_web_search+scraperapi" if scraper_key else "claude_web_search",
+            })
+        except Exception as e:
+            results.append({
+                "available": False,
+                "canal": canal_name,
+                "url": url,
+                "reason": str(e),
+            })
+
+    return results
 
 
 async def search_venue_online(venue_name: str, address: str, venue_website: str = "") -> list[dict]:
@@ -995,7 +1155,7 @@ async def scrape_all_channels(params: dict) -> dict:
 
     autres_found = {}
 
-    # 1. Use manually provided URLs first
+    # 1. Use manually provided URLs first (visit via ScraperAPI)
     for url in manually_provided_urls:
         canal_name = url
         for target in AUTRES_CANAUX_TARGETS:
@@ -1008,36 +1168,24 @@ async def scrape_all_channels(params: dict) -> dict:
         except Exception as e:
             autres_found[canal_name] = {"available": False, "canal": canal_name, "url": url, "reason": str(e)}
 
-    # 2. Auto-detect via Google Search — evaluate from SERP snippet directly
-    # No secondary page scraping needed: Google snippet already shows what's indexed
+    # 2. Auto-discover via Claude web_search + visit pages via ScraperAPI
     try:
-        google_results = await search_venue_online(
+        claude_results = await discover_autres_canaux_via_claude(
             params.get("venue_name", ""),
             params.get("address", ""),
             params.get("website", "")
         )
-        joy_keywords = ["privateaser", "joy.io", "prvt.re", "widget.privateaser"]
-        for r in google_results:
-            canal_name = r["canal_name"]
+        for r in claude_results:
+            canal_name = r.get("canal", "")
             if canal_name in autres_found:
                 continue
-            snippet = (r.get("snippet", "") + " " + r.get("title", "")).lower()
-            # Check if Joy/Privateaser is mentioned in the Google snippet
-            has_joy = any(kw in snippet for kw in joy_keywords)
-            # Check for other booking tools (signal of non-centralisation)
-            has_other_booking = any(kw in snippet for kw in [
-                "réserver", "reserver", "booking", "réservation"
-            ]) and not has_joy
-            autres_found[canal_name] = {
-                "available": True,
-                "canal": canal_name,
-                "url": r["url"],
-                "has_joy_or_vitrine": has_joy,
-                "has_mvi_phone": False,  # can't detect phone from snippet
-                "source": "google_snippet",
-                "snippet": r.get("snippet", "")[:200],
-                "detail_snippet": snippet[:300],
-            }
+            # Add MVI phone check if phone numbers found on page
+            mvi_norm = re.sub(r'[\s.\-+]', '', mvi.replace('+33', '0'))
+            phones_norm = [re.sub(r'[\s.\-]', '', p) for p in r.get("phone_numbers", [])]
+            r["has_mvi_phone"] = bool(mvi_norm) and any(
+                mvi_norm in p or p in mvi_norm for p in phones_norm
+            )
+            autres_found[canal_name] = r
     except Exception:
         pass
 
