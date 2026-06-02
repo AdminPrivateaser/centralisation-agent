@@ -65,14 +65,8 @@
           <label>Google My Business (URL fiche)</label>
           <input type="url" name="gmb" value="{{ params.get('gmb', '') }}" placeholder="https://maps.google.com/...">
         </div>
-        <div class="form-group">
-          <label>Section Réservations GMB — doublon widget Joy ?</label>
-          <select name="gmb_reservation_doublon">
-            <option value="inconnu" {% if params.get('gmb_reservation_doublon','inconnu') == 'inconnu' %}selected{% endif %}>Inconnu / à vérifier</option>
-            <option value="oui" {% if params.get('gmb_reservation_doublon') == 'oui' %}selected{% endif %}>Oui — doublon présent (Vitrine + Widget Joy)</option>
-            <option value="non" {% if params.get('gmb_reservation_doublon') == 'non' %}selected{% endif %}>Non — seulement la Vitrine</option>
-          </select>
-        </div>
+        {# doublon GMB now auto-detected via ScraperAPI — hidden field kept for fallback #}
+        <input type="hidden" name="gmb_reservation_doublon" value="{{ params.get('gmb_reservation_doublon', 'inconnu') }}">
       </div>
     </div>
 
@@ -115,10 +109,17 @@
         </div>
         <div class="form-group">
           <label>Reserve with Google activé ?</label>
-          <select name="rwg_active">
-            <option value="non" {% if params.get('rwg_active', 'non') == 'non' %}selected{% endif %}>Non</option>
-            <option value="oui" {% if params.get('rwg_active') == 'oui' %}selected{% endif %}>Oui</option>
-          </select>
+          {# Pre-filled from Salesforce Has_RwG_Enabled__c — read-only when set #}
+          {% if params.get('rwg_active') %}
+            <input type="text" value="{{ 'Oui ✅' if params.get('rwg_active') == 'oui' else 'Non' }}"
+                   readonly style="background:#f9fafb;color:var(--text-muted);">
+            <input type="hidden" name="rwg_active" value="{{ params.get('rwg_active') }}">
+          {% else %}
+            <select name="rwg_active">
+              <option value="non">Non</option>
+              <option value="oui">Oui</option>
+            </select>
+          {% endif %}
         </div>
       </div>
     </div>

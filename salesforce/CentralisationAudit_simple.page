@@ -1,0 +1,95 @@
+<apex:page standardController="Account" showHeader="false" sidebar="false">
+    <style>
+        body, html { margin: 0; padding: 0; overflow: hidden; }
+        #blocking-overlay {
+            display: none;
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5); z-index: 100;
+            align-items: center; justify-content: center;
+        }
+        #blocking-box {
+            background: white; border-radius: 8px; padding: 24px 32px;
+            max-width: 440px; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+        }
+    </style>
+
+    <!-- Blocking overlay if segment unknown -->
+    <div id="blocking-overlay">
+        <div id="blocking-box">
+            <div style="font-size: 36px; margin-bottom: 12px;">⚠️</div>
+            <h2 style="font-size: 18px; font-weight: 700; margin-bottom: 8px; color: #1b1b1b;">
+                Segment non identifiable
+            </h2>
+            <p style="color: #555; font-size: 14px; margin-bottom: 16px;">
+                La valeur du champ <strong>Segment__c</strong> (<em id="segment-raw-display"></em>)
+                ne correspond ni à <strong>A - Walk-ins First</strong> ni à <strong>B - Tables First</strong>.
+            </p>
+            <p style="color: #555; font-size: 13px; margin-bottom: 20px;">
+                Corrige le champ Segment sur la fiche Account, puis relance l'audit.
+            </p>
+            <button onclick="window.history.back()"
+                style="background: #1b5297; color: white; border: none; border-radius: 6px;
+                       padding: 10px 24px; font-size: 14px; font-weight: 600; cursor: pointer;">
+                ← Retour à la fiche
+            </button>
+        </div>
+    </div>
+
+    <iframe id="audit_iframe" width="100%" height="2000" scrolling="auto" frameborder="0"></iframe>
+
+    <script>
+        // ── Segment mapping ──────────────────────────────────────────────────
+        var segmentRaw  = '{!JSENCODE(Account.Segment__c)}';
+        var segment     = '';
+        var segmentOK   = false;
+
+        if (segmentRaw.indexOf('A - Walk-ins First') !== -1) {
+            segment   = '1';
+            segmentOK = true;
+        } else if (segmentRaw.indexOf('B - Tables First') !== -1) {
+            segment   = '2';
+            segmentOK = true;
+        } else {
+            // Block launch — segment unknown
+            document.getElementById('blocking-overlay').style.display = 'flex';
+            document.getElementById('segment-raw-display').textContent =
+                segmentRaw || '(vide)';
+        }
+
+        // ── RwG — from Salesforce field ──────────────────────────────────────
+        var rwgRaw    = '{!JSENCODE(Account.Has_RwG_Enabled__c)}';
+        var rwgActive = (rwgRaw === 'true' || rwgRaw === '1' || rwgRaw.toLowerCase() === 'true')
+                        ? 'oui' : 'non';
+
+        // ── Build audit URL ──────────────────────────────────────────────────
+        if (segmentOK) {
+            var params = {
+                venue_name:  '{!JSENCODE(Account.Name)}',
+                segment:     segment,
+                address:     '{!JSENCODE(Account.Street__c)}' + ' '
+                           + '{!JSENCODE(Account.Postal_Code__c)}' + ' '
+                           + '{!JSENCODE(Account.City__c)}',
+                website:     '{!JSENCODE(Account.Website)}',
+                instagram:   '{!JSENCODE(Account.Instagram_Page_URL__c)}',
+                linktree:    '{!JSENCODE(Account.Linktree_URL__c)}',
+                gmb:         '{!JSENCODE(Account.Google_My_Business_URL__c)}',
+                joy_widget:  '{!JSENCODE(Account.Principal_Offering_Widget_Short_URL__c)}',
+                vitrine:     '{!JSENCODE(Account.Principal_Offering_Marketplace_URL__c)}',
+                mvi:         '{!JSENCODE(Account.MVI_number__c)}',
+                rwg_active:  rwgActive,
+                // gmb_reservation_doublon: auto-détecté via ScraperAPI Google Maps
+                autres_canaux: '{!JSENCODE(Account.Tripadvisor_Page_URL__c)}'
+            };
+
+            var qs = Object.entries(params)
+                .filter(function(e) { return e[1] && e[1].trim(); })
+                .map(function(e) {
+                    return encodeURIComponent(e[0]) + '=' + encodeURIComponent(e[1].trim());
+                })
+                .join('&');
+
+            document.getElementById('audit_iframe').src =
+                'https://offersimulator-production-3934.up.railway.app/?' + qs;
+        }
+    </script>
+</apex:page>
