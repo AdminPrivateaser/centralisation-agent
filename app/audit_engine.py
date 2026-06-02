@@ -440,10 +440,8 @@ Données dans `scraped_data["autres_canaux"]["channels"]`. Segment 1 seulement (
 
 **RÈGLE MULTI-ACTIONS — OBLIGATOIRE :**
 Si un canal a N critères KO distincts, génère N entrées SÉPARÉES dans `priority_actions`. Exemple pour Site Web avec 2 KO (email + téléphone non-MVI) :
-```
-{"priority":1, "channel":"Site Web", "leak_point":"Email direct lecarlieparis@gmail.com", "action":"Supprimer l'email direct ou le remplacer par le formulaire Joy", "gain_pts":5},
-{"priority":2, "channel":"Site Web", "leak_point":"Numéro 06 XX XX XX XX dans le footer et page réservation (non-MVI)", "action":"Retirer le numéro ou le remplacer par le numéro MVI Joy", "gain_pts":5}
-```
+- entrée 1 : priority=1, channel="Site Web", leak_point="Email direct lecarlieparis@gmail.com", action="Supprimer l'email direct ou le remplacer par le formulaire Joy", gain_pts=5
+- entrée 2 : priority=2, channel="Site Web", leak_point="Numéro 06 XX XX XX XX dans le footer (non-MVI)", action="Retirer le numéro ou le remplacer par le numéro MVI Joy", gain_pts=5
 NE JAMAIS fusionner 2 points de fuite différents en 1 seule entrée priority_actions.
 Le champ `priority_action` du canal liste aussi toutes les actions séparées par `\n- `.
 
