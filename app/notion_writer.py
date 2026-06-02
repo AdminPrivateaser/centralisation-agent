@@ -33,7 +33,7 @@ def _color_to_notion(color: str) -> str:
     return {"green": "green", "orange": "orange", "red": "red"}.get(color, "default")
 
 
-def _build_channel_blocks(channel_key: str, channel_data: dict) -> list:
+def _build_channel_blocks(channel_key: str, channel_data: dict, channel_url: str = "") -> list:
     if not channel_data.get("available", True):
         return []
 
@@ -46,13 +46,20 @@ def _build_channel_blocks(channel_key: str, channel_data: dict) -> list:
     quali_color = "green" if quali >= quali_max * 0.8 else ("orange" if quali >= quali_max * 0.5 else "red")
     quali_emoji = "🟢" if quali_color == "green" else ("🟠" if quali_color == "orange" else "🔴")
 
+    # Heading with optional link to channel
+    heading_text = f"{emoji} {name}"
+    if channel_url:
+        heading_rich = [{"type": "text", "text": {"content": heading_text, "link": {"url": channel_url}}}]
+    else:
+        heading_rich = [{"type": "text", "text": {"content": heading_text}}]
+
     blocks = [
-        {"type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": f"{emoji} {name}"}}]}},
+        {"type": "heading_2", "heading_2": {"rich_text": heading_rich}},
         {
             "type": "callout",
             "callout": {
                 "rich_text": [
-                    {"type": "text", "text": {"content": f"Quanti : {quanti_emoji} {'setup min OK' if quanti_ok else 'setup min KO'}\nQuali : {quali_emoji} {quali} / {quali_max} pts"}},
+                    {"type": "text", "text": {"content": f"Quanti : {quanti_emoji} {'setup min OK' if quanti_ok else 'setup min KO'}   |   Quali : {quali_emoji} {quali} / {quali_max} pts"}},
                 ],
                 "color": "gray_background",
                 "icon": {"type": "emoji", "emoji": emoji}
@@ -60,50 +67,60 @@ def _build_channel_blocks(channel_key: str, channel_data: dict) -> list:
         },
     ]
 
-    # Criteria table
+    # Criteria table — 4 columns: Critère | Résultat | Points | Détail
     criteria = channel_data.get("criteria", [])
     if criteria:
         table_rows = [
             {
                 "type": "table_row",
                 "table_row": {"cells": [
-                    [{"type": "text", "text": {"content": "Critère"}}],
-                    [{"type": "text", "text": {"content": "Résultat"}}],
-                    [{"type": "text", "text": {"content": "Points"}}],
+                    [{"type": "text", "text": {"content": "Critère"}, "annotations": {"bold": True}}],
+                    [{"type": "text", "text": {"content": "Résultat"}, "annotations": {"bold": True}}],
+                    [{"type": "text", "text": {"content": "Points"}, "annotations": {"bold": True}}],
+                    [{"type": "text", "text": {"content": "Détail"}, "annotations": {"bold": True}}],
                 ]}
             }
         ]
         for c in criteria:
             status_emoji = {"ok": "✅ OK", "ko": "❌ KO", "partial": "⚠️ Partiel"}.get(c.get("status", "ko"), "❌ KO")
+            pts = c.get("points", 0)
+            max_pts = c.get("max_points", 0)
             table_rows.append({
                 "type": "table_row",
                 "table_row": {"cells": [
                     [{"type": "text", "text": {"content": c.get("label", "")}}],
                     [{"type": "text", "text": {"content": status_emoji}}],
-                    [{"type": "text", "text": {"content": f"+{c.get('points', 0)} pts"}}],
+                    [{"type": "text", "text": {"content": f"{pts} / {max_pts} pts"}}],
+                    [{"type": "text", "text": {"content": c.get("detail", "")}}],
                 ]}
             })
         blocks.append({
             "type": "table",
             "table": {
-                "table_width": 3,
+                "table_width": 4,
                 "has_column_header": True,
                 "has_row_header": False,
                 "children": table_rows
             }
         })
 
-    action = channel_data.get("priority_action")
+    # Action block — bullet points if multiple actions
+    action = channel_data.get("priority_action", "").strip()
     if action:
+        action_lines = [l.strip().lstrip("- ") for l in action.split("\n") if l.strip()]
         blocks.append({
-            "type": "paragraph",
-            "paragraph": {
-                "rich_text": [
-                    {"type": "text", "text": {"content": "Action prioritaire : "}, "annotations": {"bold": True}},
-                    {"type": "text", "text": {"content": action}},
-                ]
+            "type": "callout",
+            "callout": {
+                "rich_text": [{"type": "text", "text": {"content": "Actions"}, "annotations": {"bold": True}}],
+                "color": "yellow_background",
+                "icon": {"type": "emoji", "emoji": "⚡"}
             }
         })
+        for line in action_lines:
+            blocks.append({
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": line}}]}
+            })
 
     blocks.append({"type": "divider", "divider": {}})
     return blocks
@@ -200,10 +217,16 @@ async def create_audit_page(venue_params: dict, audit_result: dict, railway_url:
     ]
 
     # Channel details
+    channel_urls = {
+        "website":   venue_params.get("website", ""),
+        "gmb":       venue_params.get("gmb", ""),
+        "rwg":       venue_params.get("gmb", ""),
+        "instagram": venue_params.get("instagram", ""),
+    }
     for ch_key in ["website", "gmb", "rwg", "instagram"]:
         ch_data = channels.get(ch_key, {})
         if ch_data:
-            children.extend(_build_channel_blocks(ch_key, ch_data))
+            children.extend(_build_channel_blocks(ch_key, ch_data, channel_url=channel_urls.get(ch_key, "")))
 
     # Notion API: max 100 children per call
     page = await notion.pages.create(

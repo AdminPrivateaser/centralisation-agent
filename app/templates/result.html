@@ -16,6 +16,23 @@
   {# qo = quanti_override dict passed from Python (source of truth) #}
   {% set qo = quanti_override %}
 
+  {# Helper macro: render action box — handles multi-line actions (split on \n) #}
+  {% macro action_box(text) %}
+  {% if text %}
+  {% set lines = text.split('\n') %}
+  <div class="action-box">
+    <strong>Action :</strong>
+    {% if lines | length > 1 %}
+    <ul style="margin:6px 0 0 18px;padding:0;">
+      {% for line in lines %}{% set l = line.strip().lstrip('- ') %}{% if l %}<li>{{ l }}</li>{% endif %}{% endfor %}
+    </ul>
+    {% else %}
+    {{ text }}
+    {% endif %}
+  </div>
+  {% endif %}
+  {% endmacro %}
+
   {# Helper macro: render criteria table with detail column #}
   {% macro criteria_table(criteria_list, forced_mvi=false) %}
   <table>
@@ -129,7 +146,7 @@
       <span class="channel-badge {{ q_color }}">{{ ws.quali_score }} / {{ ws.quali_max }} pts quali</span>
     </div>
     {% if ws.criteria %}{{ criteria_table(ws.criteria) }}{% endif %}
-    {% if ws.priority_action %}<div class="action-box"><strong>Action :</strong> {{ ws.priority_action | e | replace('\n- ', '<br>• ') | replace('\n', '<br>') | safe }}</div>{% endif %}
+    {{ action_box(ws.priority_action) }}
   </div>
   {% endif %}
 
@@ -147,7 +164,7 @@
       <span class="channel-badge {{ q_color }}">{{ gmb.quali_score }} / {{ gmb.quali_max }} pts quali</span>
     </div>
     {% if gmb.criteria %}{{ criteria_table(gmb.criteria) }}{% endif %}
-    {% if gmb.priority_action %}<div class="action-box"><strong>Action :</strong> {{ gmb.priority_action | e | replace('\n- ', '<br>• ') | replace('\n', '<br>') | safe }}</div>{% endif %}
+    {{ action_box(gmb.priority_action) }}
   </div>
   {% endif %}
 
@@ -167,7 +184,7 @@
       <span class="channel-badge {{ q_color }}">{{ rwg.quali_score }} / {{ rwg.quali_max }} pts quali</span>
     </div>
     {% if rwg.criteria %}{{ criteria_table(rwg.criteria) }}{% endif %}
-    {% if rwg.priority_action %}<div class="action-box"><strong>Action :</strong> {{ rwg.priority_action | e | replace('\n- ', '<br>• ') | replace('\n', '<br>') | safe }}</div>{% endif %}
+    {{ action_box(rwg.priority_action) }}
     {% else %}
     <p style="color:var(--text-muted);font-size:13px;">Ce canal n'est pas applicable (pas de bar/restaurant éligible).</p>
     {% endif %}
@@ -188,7 +205,7 @@
       <span class="channel-badge {{ q_color }}">{{ ig.quali_score }} / {{ ig.quali_max }} pts quali</span>
     </div>
     {% if ig.criteria %}{{ criteria_table(ig.criteria, forced_mvi=qo.get('instagram_has_mvi', false)) }}{% endif %}
-    {% if ig.priority_action %}<div class="action-box"><strong>Action :</strong> {{ ig.priority_action | e | replace('\n- ', '<br>• ') | replace('\n', '<br>') | safe }}</div>{% endif %}
+    {{ action_box(ig.priority_action) }}
   </div>
   {% endif %}
 
@@ -209,7 +226,7 @@
       <span class="channel-badge {{ q_color }}">{{ saas.quali_score }} / {{ saas.quali_max }} pts quali</span>
     </div>
     {% if saas.criteria %}{{ criteria_table(saas.criteria) }}{% endif %}
-    {% if saas.priority_action %}<div class="action-box"><strong>Action :</strong> {{ saas.priority_action | e | replace('\n- ', '<br>• ') | replace('\n', '<br>') | safe }}</div>{% endif %}
+    {{ action_box(saas.priority_action) }}
     {% endif %}
   </div>
   {% endif %}
@@ -247,7 +264,7 @@
       </tbody>
     </table>
     {% endif %}
-    {% if autres.priority_action %}<div class="action-box"><strong>Action :</strong> {{ autres.priority_action | e | replace('\n- ', '<br>• ') | replace('\n', '<br>') | safe }}</div>{% endif %}
+    {{ action_box(autres.priority_action) }}
   </div>
   {% endif %}
 
