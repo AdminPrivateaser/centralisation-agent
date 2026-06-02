@@ -574,6 +574,93 @@ async def get_instagram_bio_via_google(instagram_url: str, venue_name: str) -> d
     }
 
 
+async def scrape_google_knowledge_panel(venue_name: str, address: str) -> dict:
+    """
+    Scrape the Google Search knowledge panel for a venue.
+    Extracts: reservation links (for doublon detection) + RwG Joy partner info.
+    """
+    city_match = re.search(r'(\d{5})\s+(.+)', address)
+    city = city_match.group(2) if city_match else address.split(",")[-1].strip()
+    query = f'"{venue_name}" {city}'
+    encoded = urllib.parse.quote_plus(query)
+    search_url = f"https://www.google.fr/search?q={encoded}&hl=fr&gl=fr"
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale="fr-FR",
+        )
+        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        page = await context.new_page()
+        try:
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+            await asyncio.sleep(2)
+            try:
+                btn = page.locator("text=Tout accepter").first
+                if await btn.is_visible(timeout=2000):
+                    await btn.click()
+                    await asyncio.sleep(1)
+            except Exception:
+                pass
+
+            html = await page.content()
+            text = await page.evaluate("document.body.innerText")
+
+            if "captcha" in html.lower() or len(text) < 200:
+                return {"available": False, "reason": "Google CAPTCHA"}
+
+            # ── Extract knowledge panel section ──────────────────────────────
+            # Find the knowledge panel block (right side of SERP)
+            kp_section = ""
+            kp_patterns = [
+                r'(?:Réservation|Réservations|réserver)[^\n]{0,2000}',
+                r'(?:fournis en partenariat|booking partner|reserve with)[^\n]{0,500}',
+            ]
+            for pat in kp_patterns:
+                m = re.search(pat, text, re.IGNORECASE | re.DOTALL)
+                if m:
+                    kp_section += m.group(0) + " "
+
+            # Also search in HTML for reservation links
+            all_links_in_kp = re.findall(
+                r'href="(https://[^"]*(?:privateaser|prvt\.re|joy\.io|widget\.privateaser)[^"]*)"',
+                html
+            )
+
+            # ── Doublon detection ─────────────────────────────────────────────
+            has_vitrine = any("privateaser.com/lieu" in l for l in all_links_in_kp)
+            has_widget = any(
+                ("prvt.re" in l or "widget.privateaser" in l or "/booking-widget" in l)
+                for l in all_links_in_kp
+            )
+            doublon_detected = has_vitrine and has_widget
+
+            # ── RwG Joy partner detection ─────────────────────────────────────
+            rwg_joy_detected = bool(re.search(
+                r'(?:fournis en partenariat avec Joy|powered by Joy|Reserve with Google.*Joy|Joy.*partenaire)',
+                text, re.IGNORECASE
+            ))
+
+            # ── Phone number from knowledge panel ─────────────────────────────
+            phones = re.findall(r'(?:0|\+33)\s?[1-9](?:[\s.\-]?\d{2}){4}', kp_section)
+
+            return {
+                "available": True,
+                "reservation_links": all_links_in_kp,
+                "has_vitrine_in_reservations": has_vitrine,
+                "has_widget_in_reservations": has_widget,
+                "doublon_detected": doublon_detected,
+                "rwg_joy_detected": rwg_joy_detected,
+                "phones_in_panel": phones,
+                "kp_text": kp_section[:500],
+            }
+        except Exception as e:
+            return {"available": False, "reason": str(e)}
+        finally:
+            await browser.close()
+
+
 async def search_venue_online(venue_name: str, address: str, venue_website: str = "") -> list[dict]:
     """
     Google search for venue name + city, return top directory/annuaire pages.
@@ -807,6 +894,10 @@ async def scrape_all_channels(params: dict) -> dict:
         "website": scrape_website(params.get("website", "")),
         "instagram": scrape_instagram(params.get("instagram", ""), linktree_url=params.get("linktree", "")),
         "gmb": gmb_coro,
+        # Knowledge panel in parallel — gives doublon + RwG without extra time
+        "google_kp": scrape_google_knowledge_panel(
+            params.get("venue_name", ""), params.get("address", "")
+        ),
     }
 
     results = {}
@@ -816,6 +907,20 @@ async def scrape_all_channels(params: dict) -> dict:
             results[key] = {"available": False, "reason": str(result)}
         else:
             results[key] = result
+
+    # ── Enrich GMB data with Knowledge Panel findings ─────────────────────────
+    kp = results.pop("google_kp", {})
+    if kp.get("available") and isinstance(results.get("gmb"), dict):
+        gmb_data = results["gmb"]
+        # Auto-detected doublon (no manual input needed)
+        if "doublon_detected" not in gmb_data:
+            gmb_data["doublon_detected"] = kp.get("doublon_detected", False)
+        gmb_data["has_vitrine_in_reservations"] = kp.get("has_vitrine_in_reservations", False)
+        gmb_data["has_widget_in_reservations"] = kp.get("has_widget_in_reservations", False)
+        gmb_data["reservation_links_kp"] = kp.get("reservation_links", [])
+        gmb_data["rwg_joy_detected"] = kp.get("rwg_joy_detected", False)
+        results["gmb"] = gmb_data
+    results["google_kp_raw"] = kp  # keep for audit engine
 
     # If GMB Places API failed, fall back to Playwright
     if not results.get("gmb", {}).get("available") and os.getenv("GOOGLE_PLACES_API_KEY"):

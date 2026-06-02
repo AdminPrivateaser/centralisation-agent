@@ -256,11 +256,12 @@ def _precompute_quanti(venue_params: dict, scraped: dict) -> dict:
     # RwG: trust the param
     rwg_quanti = venue_params.get('rwg_active', 'non').lower() == 'oui'
 
-    # GMB: quanti OK = Vitrine/Joy visible dans website ou joy_links
+    # GMB: quanti OK = Vitrine visible dans la section réservations (Knowledge Panel)
     gmb_quanti = None
     if gmb.get('available'):
-        if gmb.get('source') == 'google_places_api_v2':
-            # Website set to Vitrine = setup min OK
+        if gmb.get('has_vitrine_in_reservations'):
+            gmb_quanti = True  # confirmed via Knowledge Panel
+        elif gmb.get('source') == 'google_places_api_v2':
             gmb_quanti = bool(gmb.get('joy_in_website') or gmb.get('vitrine_as_website'))
         elif gmb.get('joy_links'):
             gmb_quanti = True
@@ -346,10 +347,10 @@ async def run_audit(venue_params: dict, scraped_data: dict, progress_callback=No
 
 ### Règles GMB — critères quali précis :
 - **"Section Réservations avec lien Vitrine Événementielle uniquement" (12 pts)** :
-  - Si `gmb_reservation_doublon = "oui"` (fourni par l'utilisateur) → doublon confirmé → Partial (6/12 pts). Action : supprimer le doublon widget Joy, ne garder que le lien Vitrine.
-  - Si `gmb_reservation_doublon = "non"` → OK complet (12/12 pts).
-  - Si `gmb_reservation_doublon = "inconnu"` → Partial (6/12 pts) avec note "vérification manuelle recommandée".
-  - Utilise aussi `has_reservation_doublon` et `joy_reservation_links` si disponibles pour confirmer.
+  - Priorité 1 : `doublon_detected` (auto-détecté via Google Knowledge Panel) → si True = doublon confirmé → Partial (6/12). Si False = OK (12/12).
+  - Priorité 2 : `has_vitrine_in_reservations` + `has_widget_in_reservations` (Knowledge Panel).
+  - Priorité 3 : `gmb_reservation_doublon` (param manuel) si les données auto ne sont pas disponibles.
+  - Si aucune donnée disponible → Partial (6/12) avec note "vérification manuelle recommandée".
 - **"Éditorial GMB avec mots-clés groupe" (6 pts)** : évalue via `editorial_summary`. Si vide ou absent → KO.
 - **"Produit avec lien Vitrine" (7 pts)** : si `joy_in_website=True` (le website GMB = Vitrine Privateaser), c'est un signal fort que la Vitrine est mise en avant. Marque OK si `joy_in_website=True`.
 
@@ -422,8 +423,8 @@ Pour RwG : eligible=true si bar/restaurant. Identifie les points de fuite spéci
 """
 
     response = await client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4000,
+        model="claude-haiku-4-5",
+        max_tokens=3000,
         tools=[{
             "name": "submit_audit",
             "description": "Soumettre le résultat structuré de l'audit de centralisation",

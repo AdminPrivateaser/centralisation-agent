@@ -93,6 +93,15 @@ async def start_audit(
     return JSONResponse({"audit_id": audit_id})
 
 
+async def _create_notion_async(store: dict, params: dict, audit_result: dict, railway_url: str):
+    """Create Notion page in background after result is already shown."""
+    try:
+        notion_url = await create_audit_page(params, audit_result, railway_url)
+        store["notion_url"] = notion_url
+    except Exception:
+        pass  # Notion failure doesn't affect the audit result
+
+
 async def run_audit_task(audit_id: str, params: dict, request: Request):
     store = audits[audit_id]
 
@@ -132,14 +141,13 @@ async def run_audit_task(audit_id: str, params: dict, request: Request):
         base_url = os.getenv("RAILWAY_PUBLIC_DOMAIN", str(request.base_url).rstrip("/"))
         railway_url = f"{base_url}/result/{audit_id}"
 
-        await progress("📝 Création de la page Notion...")
-        notion_url = await create_audit_page(params, audit_result, railway_url)
-        store["notion_url"] = notion_url
-        await progress(f"✅ Page Notion créée")
-
+        # ── Show result immediately, create Notion in background ──────────────
         store["result"] = audit_result
         store["status"] = "done"
         await progress("🎉 Audit terminé !")
+
+        # Notion creation is non-blocking — user already sees the result
+        asyncio.create_task(_create_notion_async(store, params, audit_result, railway_url))
 
     except Exception as e:
         store["status"] = "error"
