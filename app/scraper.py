@@ -366,6 +366,10 @@ async def scrape_gmb_places_api(venue_name: str, address: str) -> dict:
             reservation_links = maps_data.get("reservation_links", [])
             has_reservation_doublon = maps_data.get("doublon_detected", False)
             joy_in_reservations = maps_data.get("has_vitrine_in_reservations", False)
+            # Pass through editorial and non-joy links for richer evaluation
+            maps_group_editorial = maps_data.get("has_group_editorial", False)
+            maps_group_keywords = maps_data.get("group_keywords_in_maps", [])
+            maps_non_joy_links = maps_data.get("non_joy_links_in_page", [])
         else:
             # Fallback: old Playwright approach
             try:
@@ -377,6 +381,14 @@ async def scrape_gmb_places_api(venue_name: str, address: str) -> dict:
                 pass
 
         joy_reservation_links = [l for l in reservation_links if "joy.io" in l or "privateaser" in l or "prvt.re" in l]
+
+        # Enrich editorial with Maps-scraped group keywords if Places API summary is empty
+        if not editorial and maps_data.get("available") and maps_group_keywords:
+            editorial = " | ".join(maps_group_keywords[:5])
+        has_group_editorial = bool(editorial) and bool(
+            re.search(r'privatisable|privatisation|anniversaire|afterwork|groupe|séminaire|'
+                      r'événement|réservable|pots? de départ', editorial, re.IGNORECASE)
+        ) or (maps_data.get("has_group_editorial", False))
 
         return {
             "available": True,
@@ -397,6 +409,9 @@ async def scrape_gmb_places_api(venue_name: str, address: str) -> dict:
             "joy_in_reservations": joy_in_reservations,
             "has_reservation_doublon": has_reservation_doublon,
             "joy_reservation_links": joy_reservation_links,
+            "has_group_editorial": has_group_editorial,
+            "group_keywords_found": maps_group_keywords,
+            "non_joy_links_in_reservations": maps_data.get("non_joy_links_in_page", []) if maps_data.get("available") else [],
         }
 
 
@@ -476,21 +491,65 @@ async def scrape_linktree(url: str) -> dict:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         try:
-            text = await _get_page_text(page, url)
+            await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            await asyncio.sleep(3)  # Linktree loads buttons via JS
             html = await page.content()
-            links = _extract_links(html)
-            joy_links = [l for l in links if "joy.io" in l or "privateaser" in l or "prvt.re" in l]
-            all_link_texts = re.findall(r'<a[^>]*>([^<]{1,60})</a>', html, re.IGNORECASE)
+            text = await page.evaluate("document.body.innerText")
+
+            # ── Extract ONLY the actual Linktree button links (not nav/footer) ──
+            # Linktree buttons are <a> tags with external hrefs inside button containers
+            # Strategy: get all hrefs that are external (not linktr.ee itself) in order
+            button_links = []
+            # Try to get links from button elements specifically
+            try:
+                button_links = await page.evaluate("""
+                    () => {
+                        // Get all <a> tags that look like Linktree buttons (external links)
+                        const anchors = Array.from(document.querySelectorAll('a[href]'));
+                        return anchors
+                            .map(a => a.href)
+                            .filter(href =>
+                                href.startsWith('http') &&
+                                !href.includes('linktr.ee') &&
+                                !href.includes('instagram.com') &&
+                                !href.includes('linkedin.com') &&
+                                !href.includes('tiktok.com') &&
+                                !href.includes('facebook.com') &&
+                                !href.includes('twitter.com') &&
+                                !href.includes('youtube.com') &&
+                                !href.includes('google.com/maps') &&
+                                !href.includes('apple.com/maps')
+                            );
+                    }
+                """)
+            except Exception:
+                button_links = _extract_links(html)
+
+            # Deduplicate while preserving order
+            seen = set()
+            ordered_links = []
+            for l in button_links:
+                if l not in seen:
+                    seen.add(l)
+                    ordered_links.append(l)
+
+            joy_links = [l for l in ordered_links if "joy.io" in l or "privateaser" in l or "prvt.re" in l]
+
+            # Position = index in the ordered list (0-based)
+            joy_position = next(
+                (i for i, l in enumerate(ordered_links)
+                 if "joy.io" in l or "privateaser" in l or "prvt.re" in l),
+                None
+            )
+
             return {
                 "available": True,
                 "url": url,
                 "full_text": text[:3000],
                 "joy_links": joy_links,
-                "all_links": links[:20],
-                "link_labels": all_link_texts[:15],
-                "joy_link_position": next(
-                    (i for i, l in enumerate(links) if "joy.io" in l or "privateaser" in l or "prvt.re" in l), None
-                ),
+                "all_links": ordered_links[:20],
+                "total_links": len(ordered_links),
+                "joy_link_position": joy_position,  # 0-indexed; None if not found
             }
         finally:
             await browser.close()
@@ -603,14 +662,32 @@ async def scrape_google_maps_reservations(place_id: str) -> dict:
         has_widget = any("prvt.re" in l or "widget.privateaser" in l or "booking-widget" in l for l in joy_links)
         rwg_joy = bool(re.search(r'fournis en partenariat avec Joy|powered by Joy', html, re.IGNORECASE))
 
+        # Group keywords in the Maps page content (editorial / description)
+        group_keywords = re.findall(
+            r'(?:privatisable|privatisation|anniversaire|afterwork|groupe|séminaire|'
+            r'événement|privatiser|réservable|pots? de départ|team building)'
+            r'[^\n]{0,120}',
+            html, re.IGNORECASE
+        )
+        # Also extract the venue's own website if present in reservations section
+        all_hrefs_in_page = re.findall(r'href="(https?://[^"]+)"', html)
+        non_joy_reservation_links = [
+            l for l in all_hrefs_in_page
+            if "privateaser" not in l and "joy.io" not in l and "prvt.re" not in l
+            and "google" not in l and "gstatic" not in l
+        ]
+
         return {
             "available": True,
             "source": "scraperapi_maps",
             "reservation_links": joy_links,
+            "non_joy_links_in_page": non_joy_reservation_links[:5],
             "has_vitrine_in_reservations": has_vitrine,
             "has_widget_in_reservations": has_widget,
             "doublon_detected": has_vitrine and has_widget,
             "rwg_joy_detected": rwg_joy,
+            "group_keywords_in_maps": group_keywords[:5],
+            "has_group_editorial": bool(group_keywords),
         }
     except Exception as e:
         return {"available": False, "reason": str(e)}

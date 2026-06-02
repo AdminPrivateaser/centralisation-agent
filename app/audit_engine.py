@@ -342,17 +342,27 @@ async def run_audit(venue_params: dict, scraped_data: dict, progress_callback=No
   - Jamais de termes techniques comme `post_count`, `joy_links`, `scraping`, `paramètre`.
 
 ### Règles SITE WEB — critères quali précis :
-- **"Bloc/section dédié privatisation/groupes/événements" (10 pts)** : Marque OK si `has_reservation_section=True` ET (`has_privatisation_section=True` OU un widget Joy/iframe est présent). Une section "RÉSERVATIONS" dans la nav d'un one-pager avec le widget embedé = OK complet. Ne jamais marquer Partial simplement parce que le mot "privatisation" n'apparaît pas — la présence du widget dans une section réservations suffit.
-- **"Aucun canal de fuite" (10 pts)** : KO seulement si un numéro NON-MVI (différent de {venue_params.get('mvi','')}) est affiché explicitement comme moyen de réserver, OU si un email direct de réservation est présent. Cherche dans `phone_numbers_found` les numéros différents du MVI. Check aussi `phone_mentions` pour détecter les invitations à appeler.
+- **"CTA groupe dans le header" (8 pts)** : Tout CTA/bouton dans le header qui mène vers une section réservation, privatisation ou événement = OK. Les libellés "Réserver un espace", "Réservations", "Privatisation", "Événements" sont TOUS valides — pas besoin que le mot "groupe" soit explicite dans le label. Ce qui compte : le lien mène bien vers une page ou section liée aux réservations.
+- **"Bloc/section dédié privatisation/groupes/événements" (10 pts)** : Marque OK si le site a une section ou page dédiée aux réservations/groupes. La présence du widget Joy embedé dans une section réservations = OK complet. Ne pas marquer Partial parce que le mot exact "privatisation" n'est pas dans le titre.
+- **"Aucun canal de fuite" (10 pts)** : Sois TRÈS STRICT. Marque KO (0 pts) dès qu'une seule des conditions suivantes est vraie :
+  - Un email direct (ex: lecarlieparis@gmail.com) est mentionné pour réserver ou contacter → Point de fuite email
+  - Un numéro de téléphone NON-MVI (différent de {venue_params.get('mvi','')}) est proposé pour réserver, même en SMS → Point de fuite téléphone
+  - Une invitation à "contacter" ou "appeler" avec un numéro non-MVI → Point de fuite
+  Cherche dans `phone_numbers_found` ET dans le texte complet pour des patterns comme "contactez-nous au", "envoyez-nous un SMS", "appelez le".
 
 ### Règles GMB — critères quali précis :
 - **"Section Réservations avec lien Vitrine Événementielle uniquement" (12 pts)** :
-  - Priorité 1 : `doublon_detected` (auto-détecté via Google Knowledge Panel) → si True = doublon confirmé → Partial (6/12). Si False = OK (12/12).
-  - Priorité 2 : `has_vitrine_in_reservations` + `has_widget_in_reservations` (Knowledge Panel).
-  - Priorité 3 : `gmb_reservation_doublon` (param manuel) si les données auto ne sont pas disponibles.
-  - Si aucune donnée disponible → Partial (6/12) avec note "vérification manuelle recommandée".
-- **"Éditorial GMB avec mots-clés groupe" (6 pts)** : évalue via `editorial_summary`. Si vide ou absent → KO.
-- **"Produit avec lien Vitrine" (7 pts)** : si `joy_in_website=True` (le website GMB = Vitrine Privateaser), c'est un signal fort que la Vitrine est mise en avant. Marque OK si `joy_in_website=True`.
+  - Si seulement la Vitrine Privateaser (privateaser.com/lieu/...) est présente → OK (12/12).
+  - Si la Vitrine + un autre lien externe (ex: site du lieu, autre outil) → Partial (6/12). Point de fuite : doublon de lien dans la section Réservations.
+  - Si doublon Vitrine + Widget Joy → Partial (6/12).
+  - Utilise `doublon_detected`, `has_vitrine_in_reservations`, `non_joy_links_in_reservations` pour détecter les cas.
+- **"Éditorial GMB avec mots-clés groupe" (6 pts)** : évalue via `editorial_summary` ET `group_keywords_found` ET `has_group_editorial`. Si l'une de ces sources contient des mots-clés groupe (privatisable, anniversaire, afterwork, réservable, etc.) → OK. Ne pas mettre KO si le texte contient ces mots même sous d'autres formulations.
+- **"Produit avec lien Vitrine" (7 pts)** : si `joy_in_website=True` (le website GMB = Vitrine Privateaser) → OK. Signal fort que la Vitrine est mise en avant sur la fiche.
+
+### Règles AUTRES CANAUX — critères précis :
+Pour chaque canal (Tripadvisor, Mappy, etc.) évalue DEUX critères si disponibles :
+- **"Lien Joy/Vitrine dans le profil"** : `has_joy_or_vitrine` → OK si True, KO si False.
+- **"Numéro MVI dans le profil"** (si un numéro est visible) : compare `phone_numbers` avec le MVI {venue_params.get('mvi','')}. `has_mvi_phone=True` → OK (+3 pts). Numéro différent du MVI → KO. Pas de numéro visible → ne pas créer ce critère.
 
 ### Règle QUANTI (setup min) :
 Le setup min est OK/KO indépendamment des canaux de fuite. Définitions strictes :
