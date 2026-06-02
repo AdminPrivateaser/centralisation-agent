@@ -110,9 +110,34 @@ def _find_joy_mentions(text: str, html: str) -> list[str]:
     return list(set(found))
 
 
+_SAAS_LEAK_PATTERNS = [
+    "zenchef", "lafourchette", "thefork", "opentable", "resmio",
+    "dish.co", "covermanager", "sevenrooms", "guestonline", "restoo",
+]
+
+
+def _detect_non_joy_forms(html: str, text: str) -> dict:
+    """Detect embedded contact/booking forms that are NOT Joy widgets."""
+    iframes = re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE)
+    non_joy_iframes = [i for i in iframes if not any(k in i.lower() for k in ["joy", "privateaser", "prvt.re", "widget.priv"])]
+    saas_iframes = [i for i in non_joy_iframes if any(s in i.lower() for s in _SAAS_LEAK_PATTERNS)]
+    has_contact_embed = bool(re.search(
+        r'(?:contactez.nous|contact.form|formulaire.de.contact|envoyez.nous|send.message|contact-form)',
+        html, re.IGNORECASE
+    ))
+    return {
+        "non_joy_iframes": non_joy_iframes[:4],
+        "saas_iframes": saas_iframes[:3],
+        "has_non_joy_contact_embed": bool(non_joy_iframes) or has_contact_embed,
+    }
+
+
 async def scrape_website(url: str) -> dict:
     if not url:
         return {"available": False, "reason": "URL non fournie"}
+    base_url = re.match(r'https?://[^/]+', url)
+    base = base_url.group(0) if base_url else ""
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
@@ -127,6 +152,46 @@ async def scrape_website(url: str) -> dict:
                 r'(?:tel:|tél\.|téléphone|appelez|envoyez[- ]un SMS|contactez[- ]nous|SMS au|réservation par)[^\n<]{0,120}',
                 text, re.IGNORECASE
             )
+            iframes_src = re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE)
+            form_data = _detect_non_joy_forms(html, text)
+
+            # ── Crawl group-related internal subpages (privatisation, formule-groupe…) ──
+            group_pattern = re.compile(
+                r'href=["\']([^"\'#?]*(?:privatisation|priv[eé]|formule.groupe|groupe|[eé]v[eé]nement|s[eé]minaire|event|booking)[^"\']*)["\']',
+                re.IGNORECASE
+            )
+            subpage_hrefs = group_pattern.findall(html)
+            subpages_visited = []
+            seen_sub = {url}
+            for href in subpage_hrefs:
+                if href.startswith("//"):
+                    href = "https:" + href
+                elif href.startswith("/"):
+                    href = base + href
+                elif not href.startswith("http"):
+                    continue
+                if base and base not in href:
+                    continue  # skip external
+                if href in seen_sub:
+                    continue
+                seen_sub.add(href)
+                try:
+                    await page.goto(href, wait_until="domcontentloaded", timeout=12000)
+                    await asyncio.sleep(1)
+                    sub_html = await page.content()
+                    sub_text = await page.evaluate("document.body.innerText")
+                    sub_joy = _find_joy_mentions(sub_text, sub_html)
+                    sub_forms = _detect_non_joy_forms(sub_html, sub_text)
+                    subpages_visited.append({
+                        "url": href,
+                        "joy_links": sub_joy,
+                        **sub_forms,
+                    })
+                except Exception:
+                    pass
+                if len(subpages_visited) >= 2:
+                    break
+
             return {
                 "available": True,
                 "url": url,
@@ -138,7 +203,9 @@ async def scrape_website(url: str) -> dict:
                 "has_reservation_section": bool(re.search(r'r[ée]serv', text, re.IGNORECASE)),
                 "has_privatisation_section": bool(re.search(r'privati|[ée]v[ée]nement|groupe', text, re.IGNORECASE)),
                 "has_header_cta": bool(re.search(r'<header[^>]*>.*?(?:r[ée]server|r[ée]servation)', html[:5000], re.IGNORECASE | re.DOTALL)),
-                "iframes_src": re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE),
+                "iframes_src": iframes_src,
+                **form_data,
+                "subpages_group": subpages_visited,
             }
         finally:
             await browser.close()
@@ -676,6 +743,21 @@ async def scrape_google_maps_reservations(place_id: str) -> dict:
         has_widget = any("prvt.re" in l or "widget.privateaser" in l or "booking-widget" in l for l in joy_links)
         rwg_joy = bool(re.search(r'fournis en partenariat avec Joy|powered by Joy', html, re.IGNORECASE))
 
+        # Detect other SaaS booking partners present in the Maps page (RwG doublons)
+        OTHER_RWG_SAAS = {
+            "Zenchef": ["zenchef.com", "zenchef"],
+            "TheFork / La Fourchette": ["thefork.com", "lafourchette.com", "module.thefork"],
+            "OpenTable": ["opentable.com"],
+            "Dish (Metro)": ["dish.co", "resmio.com"],
+            "SevenRooms": ["sevenrooms.com"],
+            "Restoo": ["restoo.fr"],
+            "Guestonline": ["guestonline.io"],
+        }
+        other_rwg_partners = [
+            name for name, patterns in OTHER_RWG_SAAS.items()
+            if any(p in html.lower() for p in patterns)
+        ]
+
         # Group keywords in the Maps page content (editorial / description)
         group_keywords = re.findall(
             r'(?:privatisable|privatisation|anniversaire|afterwork|groupe|séminaire|'
@@ -700,6 +782,8 @@ async def scrape_google_maps_reservations(place_id: str) -> dict:
             "has_widget_in_reservations": has_widget,
             "doublon_detected": has_vitrine and has_widget,
             "rwg_joy_detected": rwg_joy,
+            "other_rwg_partners": other_rwg_partners,
+            "rwg_has_other_saas": bool(other_rwg_partners),
             "group_keywords_in_maps": group_keywords[:5],
             "has_group_editorial": bool(group_keywords),
         }

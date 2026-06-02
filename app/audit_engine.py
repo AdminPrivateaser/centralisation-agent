@@ -352,11 +352,11 @@ async def run_audit(venue_params: dict, scraped_data: dict, progress_callback=No
 - **"Aucun canal de fuite" (10 pts)** : Sois TRÈS STRICT. Marque KO (0 pts) dès qu'une seule des conditions suivantes est vraie :
   - Un email direct est mentionné pour réserver ou contacter → Point de fuite email
   - Un numéro de téléphone NON-MVI est proposé pour réserver, même en SMS → Point de fuite téléphone
-  - Une mention "Envoyez-nous un SMS au XXXX" ou "Contactez-nous au XXXX" avec un numéro non-MVI → Point de fuite SMS/téléphone
-  - Une invitation à "contacter" ou "appeler" avec un numéro non-MVI → Point de fuite
-  **SOURCE PRIORITAIRE : `non_mvi_phones_found`** — si ce champ est non vide, il contient TOUS les numéros non-MVI détectés sur le site → critère KO automatiquement.
-  Le champ `detail` doit lister EXHAUSTIVEMENT tous les points de fuite (email + chaque téléphone non-MVI trouvé). Format : "Point de fuite : [email xxxx] ; [numéro xxxx affiché dans le footer/page réservation]"
-  Cherche aussi dans `phone_mentions` pour les SMS et dans `full_text` (footer inclus).
+  - Une mention "Envoyez-nous un SMS au XXXX" avec un numéro non-MVI → Point de fuite SMS
+  - Un formulaire embed non-Joy (Zenchef, Contactez-nous, etc.) détecté sur une page groupe → KO
+  **SOURCE PRIORITAIRE : `non_mvi_phones_found`** — si non vide → KO automatique.
+  **`subpages_group`** — vérifie chaque subpage visitée : si `has_non_joy_contact_embed=True` OU `saas_iframes` non vide → KO même si la homepage a un lien Joy. Le point de fuite est sur la subpage.
+  Le `detail` liste EXHAUSTIVEMENT tous les points de fuite (email + téléphone + formulaires embed par page). Format : "Point de fuite : [email] ; [numéro] ; [formulaire Zenchef embedé sur /formule-groupe/]"
 
 ### Règles GMB — critères quali précis :
 - **"Section Réservations avec lien Vitrine Événementielle uniquement" (12 pts)** :
@@ -365,7 +365,8 @@ async def run_audit(venue_params: dict, scraped_data: dict, progress_callback=No
   - Si doublon Vitrine + Widget Joy (`doublon_detected=True`) → Partial (6/12).
   - IMPORTANT : Le seul cas OK (12/12) est quand la Vitrine est le seul lien. Tout autre lien simultané = Partial.
   - Utilise `doublon_detected`, `has_vitrine_in_reservations`, `non_joy_links_in_reservations` pour détecter les cas.
-- **"Éditorial GMB avec mots-clés groupe" (6 pts)** : évalue via `editorial_summary`, `group_keywords_found` ET `has_group_editorial`. Si L'UNE de ces sources contient des mots comme 'privatisable', 'réservable', 'anniversaire', 'afterwork', 'privatisation', 'groupe', 'séminaire' → OK (6/6). Ne mettre KO que si AUCUNE de ces trois sources ne contient ces mots.
+- **"Éditorial GMB avec mots-clés groupe" (6 pts)** : évalue via `editorial_summary`, `group_keywords_found` ET `has_group_editorial`. Si L'UNE contient des mots comme 'privatisable', 'réservable', 'anniversaire', 'afterwork', 'groupe' → OK (6/6). **N'INVENTE JAMAIS le contenu éditorial — utilise UNIQUEMENT ce qui est dans les champs scrapés. Si ces champs sont vides ou sans mots-clés groupe → KO.**
+- **Actions GMB — sois spécifique** : quand un doublon est détecté (site du lieu + Vitrine dans les réservations), l'action doit nommer le domaine exact à supprimer (ex: "supprimer [casa-loca.fr] et le doublon widget de la section Réservations"). Si l'éditorial est déjà OK (6/6), NE PAS suggérer d'ajouter des mots-clés groupe dans la description.
 - **INTERDIT : NE JAMAIS créer de critère "Produit avec lien Vitrine" ou similaire** — ce critère n'existe plus. Le GMB a exactement 2 critères et 18 pts max (12 + 6). Aucun troisième critère GMB n'est permis.
 
 ### Règles AUTRES CANAUX — critères précis :
@@ -377,8 +378,8 @@ Pour chaque canal (Tripadvisor, Mappy, etc.) évalue DEUX critères si disponibl
 Le setup min est OK/KO indépendamment des canaux de fuite. Définitions strictes :
 - **Site Web** : quanti_ok = True si au moins un lien Joy/Privateaser/widget existe quelque part sur le site (iframes incluses). Un téléphone non-MVI est un POINT DE FUITE quali uniquement, jamais un motif de KO quanti.
 - **GMB** : quanti_ok = True si un lien Vitrine Événementielle (privateaser.com/lieu/...) est dans la section réservations.
-- **RwG** : quanti_ok = True si `rwg_active` est "oui". Si les données scrappées confirment Joy comme seul partenaire (`joy_rwg_detected=True` ou `joy_in_reservations=True`), note-le explicitement. Ne demande pas de vérification manuelle si le paramètre Salesforce confirme.
-- **Instagram** : quanti_ok = True si la bio contient un lien Joy/Vitrine OU si le Linktree (quand il est présent EN BIO) contient un lien Joy/Vitrine dans les 2 premiers liens.
+- **RwG** : quanti_ok = True si `rwg_active` est "oui". **Si `rwg_has_other_saas=True` dans les données Maps : note explicitement dans quanti_detail que d'autres partenaires SaaS sont présents (`other_rwg_partners`) en plus de Joy — c'est un point de fuite RwG.** Ne demande pas de vérification manuelle si le paramètre Salesforce confirme.
+- **Instagram** : quanti_ok = True si la bio contient un lien Joy/Vitrine OU si le Linktree (présent EN BIO) contient un lien Joy/Vitrine dans les 2 premiers liens. **Segment 2 — Linktree** : si un lien SaaS Individual Booking (ex: Zenchef) est en position 1 du Linktree, le lien Joy en position 2 reste dans le top-2 des liens de réservation → quanti OK. Mentionne explicitement dans le detail : "Zenchef en position 1 (autorisé Segment 2), Joy/Vitrine en position 2".
 
 ### Règles INSTAGRAM — Logique exacte Segment 1 :
 Évalue DEUX sous-critères indépendants :

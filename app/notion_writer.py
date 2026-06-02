@@ -104,23 +104,26 @@ def _build_channel_blocks(channel_key: str, channel_data: dict, channel_url: str
             }
         })
 
-    # Action block — bullet points if multiple actions
+    # Action block — bullet points nested inside the callout
     action = channel_data.get("priority_action", "").strip()
     if action:
         action_lines = [l.strip().lstrip("- ") for l in action.split("\n") if l.strip()]
+        action_children = [
+            {
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": line}}]}
+            }
+            for line in action_lines
+        ]
         blocks.append({
             "type": "callout",
             "callout": {
-                "rich_text": [{"type": "text", "text": {"content": "Actions"}, "annotations": {"bold": True}}],
+                "rich_text": [{"type": "text", "text": {"content": "⚡ Actions"}, "annotations": {"bold": True}}],
                 "color": "yellow_background",
-                "icon": {"type": "emoji", "emoji": "⚡"}
+                "icon": {"type": "emoji", "emoji": "⚡"},
+                "children": action_children,
             }
         })
-        for line in action_lines:
-            blocks.append({
-                "type": "bulleted_list_item",
-                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": line}}]}
-            })
 
     blocks.append({"type": "divider", "divider": {}})
     return blocks
